@@ -2,3 +2,9 @@
 *.pyc
 blue_amazon_frog/frogbone_datafiles.zip
 *.mp4
+smartt.egg-info/dependency_links.txt
+smartt.egg-info/entry_points.txt
+smartt.egg-info/PKG-INFO
+smartt.egg-info/requires.txt
+smartt.egg-info/SOURCES.txt
+smartt.egg-info/top_level.txt
