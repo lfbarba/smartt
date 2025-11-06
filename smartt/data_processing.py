@@ -177,12 +177,30 @@ def generate_reconstruction_dataset(
         results = optimizer.optimize()
         
         # Extract reconstruction
-        # The results object typically has a 'reconstruction' attribute or similar
-        # If not, it might be results itself or results['reconstruction']
-        if hasattr(results, 'reconstruction'):
+        # The LBFGS optimizer returns a dictionary with the reconstruction
+        if isinstance(results, dict):
+            # Check for common keys in mumott optimizer results
+            if 'x' in results:
+                reconstruction = results['x']
+            elif 'reconstruction' in results:
+                reconstruction = results['reconstruction']
+            elif 'coefficients' in results:
+                reconstruction = results['coefficients']
+            else:
+                # If none of these keys exist, print available keys for debugging
+                if verbose:
+                    print(f"Warning: Unexpected result keys: {list(results.keys())}")
+                # Try to get the first value that looks like an array
+                for key, value in results.items():
+                    if isinstance(value, (np.ndarray, torch.Tensor)) or hasattr(value, 'shape'):
+                        reconstruction = value
+                        if verbose:
+                            print(f"Using key '{key}' as reconstruction")
+                        break
+                else:
+                    raise ValueError(f"Could not find reconstruction in results. Keys: {list(results.keys())}")
+        elif hasattr(results, 'reconstruction'):
             reconstruction = results.reconstruction
-        elif isinstance(results, dict) and 'reconstruction' in results:
-            reconstruction = results['reconstruction']
         else:
             # Assume results is the reconstruction itself
             reconstruction = results
@@ -191,7 +209,11 @@ def generate_reconstruction_dataset(
         if torch.is_tensor(reconstruction):
             reconstruction = reconstruction.cpu().numpy()
         
-        reconstruction = np.asarray(reconstruction, dtype=np.float32)
+        # Ensure it's a numpy array
+        if not isinstance(reconstruction, np.ndarray):
+            reconstruction = np.asarray(reconstruction)
+        
+        reconstruction = reconstruction.astype(np.float32)
         
         if verbose:
             print(f"Reconstruction shape: {reconstruction.shape}")
