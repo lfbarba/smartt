@@ -1,0 +1,18 @@
+export XDG_CACHE_HOME=/myhome/.cache
+wandb login d6f99b98acf9c1a284aa2ba5830f3eca60fde2f0
+
+cd /myhome/BaseTraining/
+python -m pip install -e .
+
+cd /myhome/smartt/
+python -m pip install -e .
+python -m pip install joblib
+
+python -m pip install e3nn
+
+eval "$(ssh-agent -s)"
+ssh-add /myhome/.ssh/id_rsa
+ssh-add /myhome/.ssh/id_ed25519
+
+# start ssh server
+/usr/sbin/sshd

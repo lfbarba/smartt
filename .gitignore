@@ -8,3 +8,9 @@ smartt.egg-info/PKG-INFO
 smartt.egg-info/requires.txt
 smartt.egg-info/SOURCES.txt
 smartt.egg-info/top_level.txt
+*.pt
+*.log
+wandb/latest-run
+wandb/*
+*.patch
+notebooks/mumott_plotting/.DS_Store
