@@ -13,6 +13,8 @@ python -m pip install e3nn
 eval "$(ssh-agent -s)"
 ssh-add /myhome/.ssh/id_rsa
 ssh-add /myhome/.ssh/id_ed25519
+git config --global user.email "lfbarba@gmail.com"
+git config --global user.name "Luis Barba"
 
 # start ssh server
 /usr/sbin/sshd

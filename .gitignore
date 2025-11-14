@@ -14,3 +14,4 @@ wandb/latest-run
 wandb/*
 *.patch
 notebooks/mumott_plotting/.DS_Store
+sici/bone_user_geometry.geo
