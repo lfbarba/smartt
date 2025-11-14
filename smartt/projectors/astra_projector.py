@@ -748,7 +748,7 @@ def gd_reconstruction(
         # Default: zero initialization
         recon = torch.zeros(vol_shape, dtype=torch.float32, device=device)
     
-    # Volume stays as (X, Y, Z) for the new projector API
+    # Volume stays as (X, Y, Z)
     recon.requires_grad_(True)
     
     # Build differentiable projector
@@ -787,9 +787,6 @@ def gd_reconstruction(
             batch_geom_tuples = [geometry[int(i)] for i in indices]
             
             # Build a temporary geometry-like object that contains only the batch
-            # We'll create ASTRA geometries directly for this batch
-            from mumott import Geometry as MumottGeometry
-            
             # Create a minimal geometry-like object with the subset
             class BatchGeometry:
                 def __init__(self, base_geometry, indices):
@@ -837,7 +834,7 @@ def gd_reconstruction(
             
             batch_geometry = BatchGeometry(geometry, indices)
             
-            # Build projector for this batch
+            # Build projector for this batch (uses corrected forward projection logic)
             batch_projector = build_mumott_projector(batch_geometry, device=device)
             
             # Forward projection (only for selected angles)
@@ -845,7 +842,7 @@ def gd_reconstruction(
         else:
             meas_batch = meas
             
-            # Forward projection (all angles)
+            # Forward projection (all angles, uses corrected forward projection logic)
             pred_batch = projector(recon)  # (I, J, K)
         
         # Compute loss (MSE)
@@ -877,118 +874,31 @@ def gd_reconstruction(
 # ---------------------------------------------------------------------------
 
 class _AstraMumottOp:
-    """ASTRA forward/adjoint operator using mumott geometry."""
+    """ASTRA forward/adjoint operator using mumott geometry.
     
-    def __init__(self, geometry):
+    This class wraps the working forward_project and backproject functions
+    to provide a consistent interface for the autograd implementation.
+    """
+    
+    def __init__(self, geometry, device):
         self.geometry = geometry
-        self.vol_geom, self.proj_geom = _create_astra_geometries_from_mumott(geometry)
-        self.vol_shape = geometry.volume_shape
-        self.proj_shape = geometry.projection_shape
-        self.n_projections = len(geometry)
+        self.device = device
     
     def forward(self, vol_t):
-        """Forward projection: volume -> sinogram."""
-        # vol_t is (X, Y, Z)
-        # Need to convert to ASTRA format (Z, Y, X)
-        if vol_t.is_cuda:
-            vol_cp = cp.ndarray(
-                shape=vol_t.shape,
-                dtype=cp.float32,
-                memptr=cp.cuda.MemoryPointer(
-                    cp.cuda.UnownedMemory(vol_t.data_ptr(), vol_t.numel() * 4, vol_t),
-                    0
-                )
-            )
-            vol_astra = cp.transpose(vol_cp, (2, 1, 0))
-            vol_astra = cp.ascontiguousarray(vol_astra)
-            
-            # ASTRA sinogram format is (det_rows, n_angles, det_cols)
-            proj_shape_astra = (self.proj_shape[1], self.n_projections, self.proj_shape[0])
-            proj_astra = cp.zeros(proj_shape_astra, dtype=cp.float32)
-            
-            vol_id = astra.data3d.link('-vol', self.vol_geom, vol_astra)
-            sino_id = astra.data3d.link('-sino', self.proj_geom, proj_astra)
-        else:
-            vol_np = vol_t.detach().cpu().numpy()
-            vol_astra = np.transpose(vol_np, (2, 1, 0)).copy()
-            
-            # ASTRA sinogram format is (det_rows, n_angles, det_cols)
-            proj_shape_astra = (self.proj_shape[1], self.n_projections, self.proj_shape[0])
-            proj_astra = np.zeros(proj_shape_astra, dtype=np.float32)
-            
-            vol_id = astra.data3d.create('-vol', self.vol_geom, vol_astra)
-            sino_id = astra.data3d.create('-sino', self.proj_geom, proj_astra)
+        """Forward projection: volume -> sinogram.
         
-        cfg = astra.astra_dict('FP3D_CUDA')
-        cfg['VolumeDataId'] = vol_id
-        cfg['ProjectionDataId'] = sino_id
-        alg_id = astra.algorithm.create(cfg)
-        astra.algorithm.run(alg_id, 1)
-        astra.algorithm.delete(alg_id)
-        astra.data3d.delete(sino_id)
-        astra.data3d.delete(vol_id)
-        
-        # Convert result back - proj_astra is (K, I, J), need (I, J, K)
-        # ASTRA returns (det_rows, n_angles, det_cols) = (K, I, J)
-        if vol_t.is_cuda:
-            out = torch.as_tensor(proj_astra, device=vol_t.device).permute(1, 2, 0)
-        else:
-            if not isinstance(proj_astra, np.ndarray):
-                proj_astra = astra.data3d.get(sino_id)
-            out = torch.from_numpy(proj_astra).to(torch.float32).to(vol_t.device)
-            out = out.permute(1, 2, 0)  # (K, I, J) -> (I, J, K)
-        
-        return out
+        Uses the working forward_project implementation directly.
+        """
+        # forward_project expects (X, Y, Z) and returns (I, J, K)
+        return forward_project(vol_t, self.geometry, device=self.device)
 
     def adjoint(self, sino_t):
-        """Adjoint/backprojection: sinogram -> volume."""
-        # sino_t is (I, J, K)
-        # Need to convert to ASTRA format (K, I, J) = (det_rows, n_angles, det_cols)
-        sino_astra = sino_t.permute(2, 0, 1).contiguous()
+        """Adjoint/backprojection: sinogram -> volume.
         
-        if sino_t.is_cuda:
-            sino_cp = cp.ndarray(
-                shape=sino_astra.shape,
-                dtype=cp.float32,
-                memptr=cp.cuda.MemoryPointer(
-                    cp.cuda.UnownedMemory(sino_astra.data_ptr(), sino_astra.numel() * 4, sino_astra),
-                    0
-                )
-            )
-            
-            vol_astra_shape = (self.vol_shape[2], self.vol_shape[1], self.vol_shape[0])
-            vol_astra = cp.zeros(vol_astra_shape, dtype=cp.float32)
-            
-            vol_id = astra.data3d.link('-vol', self.vol_geom, vol_astra)
-            sino_id = astra.data3d.link('-sino', self.proj_geom, sino_cp)
-        else:
-            sino_np = sino_astra.detach().cpu().numpy()
-            
-            vol_astra_shape = (self.vol_shape[2], self.vol_shape[1], self.vol_shape[0])
-            vol_astra = np.zeros(vol_astra_shape, dtype=np.float32)
-            
-            vol_id = astra.data3d.create('-vol', self.vol_geom, vol_astra)
-            sino_id = astra.data3d.create('-sino', self.proj_geom, sino_np)
-        
-        cfg = astra.astra_dict('BP3D_CUDA')
-        cfg['ReconstructionDataId'] = vol_id
-        cfg['ProjectionDataId'] = sino_id
-        alg_id = astra.algorithm.create(cfg)
-        astra.algorithm.run(alg_id, 1)
-        astra.algorithm.delete(alg_id)
-        astra.data3d.delete(sino_id)
-        astra.data3d.delete(vol_id)
-        
-        # Convert result back - vol_astra is (Z, Y, X), need (X, Y, Z)
-        if sino_t.is_cuda:
-            out = torch.as_tensor(vol_astra, device=sino_t.device).permute(2, 1, 0)
-        else:
-            if not isinstance(vol_astra, np.ndarray):
-                vol_astra = astra.data3d.get(vol_id)
-            out = torch.from_numpy(vol_astra).to(torch.float32).to(sino_t.device)
-            out = out.permute(2, 1, 0)
-        
-        return out
+        Uses the working backproject implementation directly.
+        """
+        # backproject expects (I, J, K) and returns (X, Y, Z)
+        return backproject(sino_t, self.geometry, device=self.device)
 
 
 def build_mumott_projector(
@@ -1029,7 +939,7 @@ def build_mumott_projector(
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    op = _AstraMumottOp(geometry)
+    op = _AstraMumottOp(geometry, device)
 
     class MumottProjectorFn(torch.autograd.Function):
         @staticmethod
