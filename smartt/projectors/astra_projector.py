@@ -351,6 +351,82 @@ def _forward_project_single_cpu(volume_slice: torch.Tensor, vol_geom, proj_geom,
     return proj_torch
 
 
+def _backproject_single_gpu(proj_slice: torch.Tensor, vol_geom, proj_geom,
+                            vol_shape: Tuple[int, int, int], device: torch.device) -> torch.Tensor:
+    """Backproject a single sinogram on GPU using CuPy (cached geometry version)."""
+    # Convert to ASTRA format (K, I, J) = (det_rows, n_angles, det_cols)
+    proj_astra = proj_slice.permute(2, 0, 1).contiguous()
+    
+    # Create CuPy view
+    proj_cp = cp.ndarray(
+        shape=proj_astra.shape,
+        dtype=cp.float32,
+        memptr=cp.cuda.MemoryPointer(
+            cp.cuda.UnownedMemory(proj_astra.data_ptr(), proj_astra.numel() * 4, proj_astra),
+            0
+        )
+    )
+    
+    # Allocate output volume in ASTRA format (z, y, x)
+    vol_astra_shape = (vol_shape[2], vol_shape[1], vol_shape[0])
+    vol_astra = cp.zeros(vol_astra_shape, dtype=cp.float32)
+    
+    # Create ASTRA objects and run backprojection
+    vol_id = astra.data3d.link('-vol', vol_geom, vol_astra)
+    sino_id = astra.data3d.link('-sino', proj_geom, proj_cp)
+    
+    cfg = astra.astra_dict('BP3D_CUDA')
+    cfg['ReconstructionDataId'] = vol_id
+    cfg['ProjectionDataId'] = sino_id
+    alg_id = astra.algorithm.create(cfg)
+    astra.algorithm.run(alg_id, 1)
+    
+    # Cleanup
+    astra.algorithm.delete(alg_id)
+    astra.data3d.delete(sino_id)
+    astra.data3d.delete(vol_id)
+    
+    # Convert to PyTorch and transpose to (X, Y, Z)
+    vol_torch = torch.as_tensor(vol_astra, device=device).permute(2, 1, 0).clone()
+    
+    return vol_torch
+
+
+def _backproject_single_cpu(proj_slice: torch.Tensor, vol_geom, proj_geom,
+                            vol_shape: Tuple[int, int, int], device: torch.device) -> torch.Tensor:
+    """Backproject a single sinogram on CPU using NumPy (cached geometry version)."""
+    # Convert to ASTRA format (K, I, J) = (det_rows, n_angles, det_cols)
+    proj_np = proj_slice.permute(2, 0, 1).detach().cpu().numpy()
+    
+    # Allocate output volume in ASTRA format (z, y, x)
+    vol_astra_shape = (vol_shape[2], vol_shape[1], vol_shape[0])
+    vol_astra = np.zeros(vol_astra_shape, dtype=np.float32)
+    
+    # Create ASTRA objects and run backprojection
+    vol_id = astra.data3d.create('-vol', vol_geom, vol_astra)
+    sino_id = astra.data3d.create('-sino', proj_geom, proj_np)
+    
+    cfg = astra.astra_dict('BP3D_CUDA')
+    cfg['ReconstructionDataId'] = vol_id
+    cfg['ProjectionDataId'] = sino_id
+    alg_id = astra.algorithm.create(cfg)
+    astra.algorithm.run(alg_id, 1)
+    
+    # Get result
+    vol_astra = astra.data3d.get(vol_id)
+    
+    # Cleanup ASTRA objects
+    astra.algorithm.delete(alg_id)
+    astra.data3d.delete(sino_id)
+    astra.data3d.delete(vol_id)
+    
+    # Convert to PyTorch and transpose to (X, Y, Z)
+    vol_torch = torch.from_numpy(vol_astra).to(torch.float32).to(device)
+    vol_torch = vol_torch.permute(2, 1, 0)  # (z, y, x) -> (X, Y, Z)
+    
+    return vol_torch
+
+
 def forward_project(
     volume: torch.Tensor,
     geometry,
@@ -878,11 +954,18 @@ class _AstraMumottOp:
     
     This class wraps the working forward_project and backproject functions
     to provide a consistent interface for the autograd implementation.
+    
+    Caches ASTRA geometries for efficiency when processing batched volumes.
     """
     
     def __init__(self, geometry, device):
         self.geometry = geometry
         self.device = device
+        # Cache ASTRA geometries to avoid recreating them for each coefficient
+        self._vol_geom, self._proj_geom = _create_astra_geometries_from_mumott(geometry)
+        self._n_projections = len(geometry)
+        self._proj_shape = geometry.projection_shape
+        self._vol_shape = tuple(geometry.volume_shape)
     
     def forward(self, vol_t):
         """Forward projection: volume -> sinogram.
@@ -891,6 +974,31 @@ class _AstraMumottOp:
         """
         # forward_project expects (X, Y, Z) and returns (I, J, K)
         return forward_project(vol_t, self.geometry, device=self.device)
+    
+    def forward_single(self, vol_t):
+        """Forward projection for a single 3D volume using cached geometries."""
+        vol_device = vol_t.device
+        if vol_device.type == 'cuda':
+            if not CUPY_AVAILABLE:
+                raise RuntimeError("CuPy required for GPU projection")
+            return _forward_project_single_gpu(
+                vol_t, self._vol_geom, self._proj_geom, 
+                self._proj_shape, self._n_projections, self.device
+            )
+        else:
+            return _forward_project_single_cpu(
+                vol_t, self._vol_geom, self._proj_geom,
+                self._proj_shape, self._n_projections, self.device
+            )
+    
+    def forward_batched(self, vol_t):
+        """Forward projection for batched (X, Y, Z, B) volumes using cached geometries."""
+        B = vol_t.shape[3]
+        projs_list = []
+        for b in range(B):
+            proj = self.forward_single(vol_t[..., b])
+            projs_list.append(proj)
+        return torch.stack(projs_list, dim=3)
 
     def adjoint(self, sino_t):
         """Adjoint/backprojection: sinogram -> volume.
@@ -899,6 +1007,31 @@ class _AstraMumottOp:
         """
         # backproject expects (I, J, K) and returns (X, Y, Z)
         return backproject(sino_t, self.geometry, device=self.device)
+    
+    def adjoint_single(self, sino_t):
+        """Adjoint for a single 3D sinogram using cached geometries."""
+        sino_device = sino_t.device
+        if sino_device.type == 'cuda':
+            if not CUPY_AVAILABLE:
+                raise RuntimeError("CuPy required for GPU projection")
+            return _backproject_single_gpu(
+                sino_t, self._vol_geom, self._proj_geom,
+                self._vol_shape, self.device
+            )
+        else:
+            return _backproject_single_cpu(
+                sino_t, self._vol_geom, self._proj_geom,
+                self._vol_shape, self.device
+            )
+    
+    def adjoint_batched(self, sino_t):
+        """Adjoint for batched (I, J, K, B) sinograms using cached geometries."""
+        B = sino_t.shape[3]
+        vols_list = []
+        for b in range(B):
+            vol = self.adjoint_single(sino_t[..., b])
+            vols_list.append(vol)
+        return torch.stack(vols_list, dim=3)
 
 
 def build_mumott_projector(
@@ -946,20 +1079,14 @@ def build_mumott_projector(
         def forward(ctx, x: torch.Tensor):
             # Handle both (X, Y, Z) and (X, Y, Z, B)
             if x.ndim == 3:
-                # Single volume
-                proj_t = op.forward(x)  # (I, J, K)
+                # Single volume - use cached geometry
+                proj_t = op.forward_single(x)  # (I, J, K)
                 ctx.batched = False
                 ctx.op = op
                 return proj_t
             elif x.ndim == 4:
-                # Batched volumes
-                B = x.shape[3]
-                y_out = []
-                for i in range(B):
-                    vol_t = x[..., i]  # (X, Y, Z)
-                    proj_t = op.forward(vol_t)  # (I, J, K)
-                    y_out.append(proj_t)
-                y_out = torch.stack(y_out, dim=3)  # (I, J, K, B)
+                # Batched volumes - use cached geometry
+                y_out = op.forward_batched(x)  # (I, J, K, B)
                 ctx.batched = True
                 ctx.op = op
                 return y_out
@@ -970,18 +1097,12 @@ def build_mumott_projector(
         def backward(ctx, grad_out: torch.Tensor):
             op_local = ctx.op
             if not ctx.batched:
-                # Single volume gradient
-                g_vol = op_local.adjoint(grad_out)  # (X, Y, Z)
+                # Single volume gradient - use cached geometry
+                g_vol = op_local.adjoint_single(grad_out)  # (X, Y, Z)
                 return g_vol
             else:
-                # Batched gradient
-                B = grad_out.shape[3]
-                g_vols = []
-                for i in range(B):
-                    g_y = grad_out[..., i]  # (I, J, K)
-                    g_vol = op_local.adjoint(g_y)  # (X, Y, Z)
-                    g_vols.append(g_vol)
-                g_stack = torch.stack(g_vols, dim=3)  # (X, Y, Z, B)
+                # Batched gradient - use cached geometry
+                g_stack = op_local.adjoint_batched(grad_out)  # (X, Y, Z, B)
                 return g_stack
 
     def layer(x: torch.Tensor) -> torch.Tensor:

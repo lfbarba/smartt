@@ -11,10 +11,15 @@ from .astra_projector import (
     gd_reconstruction,
 )
 
+from .slice_projector import (
+    SphericalHarmonicSliceProjector,
+)
+
 __all__ = [
     'build_mumott_projector',
     'forward_project',
     'backproject',
     'fbp_reconstruction',
     'gd_reconstruction',
+    'SphericalHarmonicSliceProjector',
 ]

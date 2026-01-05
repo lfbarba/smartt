@@ -13,6 +13,171 @@ from scipy.special import lpmv
 from e3nn import o3
 
 
+def _compute_rotation_worker(proj_vec: torch.Tensor, ell_max: int) -> torch.Tensor:
+    """
+    Worker function for parallel rotation matrix computation.
+    Must be at module level for pickling.
+    
+    Parameters
+    ----------
+    proj_vec : torch.Tensor
+        Projection direction vector (3,)
+    ell_max : int
+        Maximum spherical harmonic degree
+    
+    Returns
+    -------
+    wigner_D : torch.Tensor
+        Block-diagonal Wigner D-matrix
+    """
+    # Compute rotation matrix to align proj_vec with z-axis
+    vec = proj_vec / torch.norm(proj_vec)
+    ez = torch.tensor([0.0, 0.0, 1.0], dtype=vec.dtype)
+    
+    # Dot product with z-axis
+    cos_theta = torch.dot(vec, ez)
+    eps = 1e-7
+    
+    # vec already aligned with +z
+    if cos_theta >= 1.0 - eps:
+        R = torch.eye(3, dtype=vec.dtype)
+    # vec aligned with -z (180° rotation)
+    elif cos_theta <= -1.0 + eps:
+        R = torch.tensor([
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0]
+        ], dtype=vec.dtype)
+    else:
+        # General case: use Rodrigues formula
+        axis = torch.cross(vec, ez)
+        axis = axis / torch.norm(axis)
+        
+        sin_theta = torch.sqrt(1 - cos_theta**2)
+        
+        # Skew-symmetric matrix K
+        kx, ky, kz = axis[0], axis[1], axis[2]
+        K = torch.stack([
+            torch.stack([torch.tensor(0.0, dtype=vec.dtype), -kz, ky]),
+            torch.stack([kz, torch.tensor(0.0, dtype=vec.dtype), -kx]),
+            torch.stack([-ky, kx, torch.tensor(0.0, dtype=vec.dtype)])
+        ])
+        
+        I = torch.eye(3, dtype=vec.dtype)
+        
+        # Rodrigues formula: R = I + sin(θ)K + (1-cos(θ))K²
+        R = I + sin_theta * K + (1 - cos_theta) * torch.matmul(K, K)
+    
+    # Convert to Euler angles
+    alpha, beta, gamma = o3.matrix_to_angles(R)
+    
+    # Build block-diagonal Wigner D-matrix for even-ℓ only
+    D_blocks = []
+    for ell in range(0, ell_max + 1, 2):  # Even ℓ only
+        D_ell = o3.wigner_D(ell, alpha, beta, gamma)
+        D_blocks.append(D_ell)
+    
+    # Combine into block-diagonal matrix
+    wigner_D = torch.block_diag(*D_blocks)
+    
+    return wigner_D
+
+
+def _worker_process_batch(start_idx: int, end_idx: int, proj_vecs: torch.Tensor, 
+                          ell_max: int, result_queue) -> None:
+    """
+    Worker process that computes a batch of rotation matrices.
+    Must be at module level for pickling.
+    
+    Parameters
+    ----------
+    start_idx : int
+        Start index in projection vectors
+    end_idx : int
+        End index (exclusive)
+    proj_vecs : torch.Tensor
+        All projection vectors
+    ell_max : int
+        Maximum spherical harmonic degree
+    result_queue : multiprocessing.Queue
+        Queue to put results
+    """
+    results = []
+    for idx in range(start_idx, end_idx):
+        proj_vec = proj_vecs[idx]
+        # Compute rotation matrix
+        wigner_D = _compute_rotation_worker(proj_vec, ell_max)
+        results.append((idx, wigner_D))
+    result_queue.put(results)
+    """
+    Worker function for parallel rotation matrix computation.
+    Must be at module level for pickling.
+    
+    Parameters
+    ----------
+    proj_vec : torch.Tensor
+        Projection direction vector (3,)
+    ell_max : int
+        Maximum spherical harmonic degree
+    
+    Returns
+    -------
+    wigner_D : torch.Tensor
+        Block-diagonal Wigner D-matrix
+    """
+    # Compute rotation matrix to align proj_vec with z-axis
+    vec = proj_vec / torch.norm(proj_vec)
+    ez = torch.tensor([0.0, 0.0, 1.0], dtype=vec.dtype)
+    
+    # Dot product with z-axis
+    cos_theta = torch.dot(vec, ez)
+    eps = 1e-7
+    
+    # vec already aligned with +z
+    if cos_theta >= 1.0 - eps:
+        R = torch.eye(3, dtype=vec.dtype)
+    # vec aligned with -z (180° rotation)
+    elif cos_theta <= -1.0 + eps:
+        R = torch.tensor([
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0]
+        ], dtype=vec.dtype)
+    else:
+        # General case: use Rodrigues formula
+        axis = torch.cross(vec, ez)
+        axis = axis / torch.norm(axis)
+        
+        sin_theta = torch.sqrt(1 - cos_theta**2)
+        
+        # Skew-symmetric matrix K
+        kx, ky, kz = axis[0], axis[1], axis[2]
+        K = torch.stack([
+            torch.stack([torch.tensor(0.0, dtype=vec.dtype), -kz, ky]),
+            torch.stack([kz, torch.tensor(0.0, dtype=vec.dtype), -kx]),
+            torch.stack([-ky, kx, torch.tensor(0.0, dtype=vec.dtype)])
+        ])
+        
+        I = torch.eye(3, dtype=vec.dtype)
+        
+        # Rodrigues formula: R = I + sin(θ)K + (1-cos(θ))K²
+        R = I + sin_theta * K + (1 - cos_theta) * torch.matmul(K, K)
+    
+    # Convert to Euler angles
+    alpha, beta, gamma = o3.matrix_to_angles(R)
+    
+    # Build block-diagonal Wigner D-matrix for even-ℓ only
+    D_blocks = []
+    for ell in range(0, ell_max + 1, 2):  # Even ℓ only
+        D_ell = o3.wigner_D(ell, alpha, beta, gamma)
+        D_blocks.append(D_ell)
+    
+    # Combine into block-diagonal matrix
+    wigner_D = torch.block_diag(*D_blocks)
+    
+    return wigner_D
+
+
 class SphericalHarmonicSliceProjector:
     """
     Project spherical harmonic coefficients onto circular slices.
@@ -222,31 +387,118 @@ class SphericalHarmonicSliceProjector:
         
         return R
     
-    def _precompute_rotations(self) -> list:
+    def _precompute_rotations(self, use_parallel=True, num_workers=None) -> list:
         """
         Pre-compute Wigner D-matrices for all projection angles.
+        
+        Parameters
+        ----------
+        use_parallel : bool
+            If True, use multiprocessing to compute rotations in parallel
+        num_workers : int, optional
+            Number of worker processes. If None, uses CPU count.
         
         Returns
         -------
         rotation_matrices : list
-            List of e3nn Wigner D-matrices for each projection
+            List of rotation matrices that can rotate SH coefficients (45x45 matrices)
         """
+        if use_parallel and self.num_projections > 1:
+            return self._precompute_rotations_parallel(num_workers)
+        else:
+            return self._precompute_rotations_serial()
+    
+    def _precompute_rotations_serial(self) -> list:
+        """Compute rotation matrices serially (single-threaded)."""
         rotation_matrices = []
         
         for proj_vec in self.projection_vectors:
-            # Get rotation matrix
-            R = self._rotation_matrix_to_align_vector(proj_vec)
-            
-            # Convert to e3nn Wigner D-matrix representation
-            # Note: e3nn uses a different convention, so we may need to transpose
-            D_matrix = o3.matrix_to_angles(R.cpu().numpy())
-            
-            # Create Wigner D-matrix for this rotation
-            wigner_D = o3.wigner_D(self.irreps, *D_matrix)
-            
+            wigner_D = self._compute_single_rotation(proj_vec)
             rotation_matrices.append(wigner_D.to(self.device))
         
         return rotation_matrices
+    
+    def _precompute_rotations_parallel(self, num_workers=None) -> list:
+        """Compute rotation matrices in parallel using multiprocessing."""
+        import torch.multiprocessing as mp
+        import os
+        
+        if num_workers is None:
+            num_workers = min(os.cpu_count(), self.num_projections)
+        
+        print(f"Computing {self.num_projections} rotation matrices using {num_workers} workers...")
+        
+        # Set multiprocessing start method to 'spawn' for CUDA compatibility
+        mp_context = mp.get_context('spawn')
+        
+        # Create a queue for results
+        result_queue = mp_context.Queue()
+        
+        # Divide work into chunks
+        chunk_size = max(1, self.num_projections // num_workers)
+        processes = []
+        proj_vecs_cpu = self.projection_vectors.cpu()
+        
+        for i in range(num_workers):
+            start_idx = i * chunk_size
+            end_idx = min((i + 1) * chunk_size, self.num_projections) if i < num_workers - 1 else self.num_projections
+            
+            if start_idx >= self.num_projections:
+                break
+            
+            p = mp_context.Process(
+                target=_worker_process_batch,
+                args=(start_idx, end_idx, proj_vecs_cpu, self.ell_max, result_queue)
+            )
+            p.start()
+            processes.append(p)
+        
+        # Collect results
+        rotation_matrices = [None] * self.num_projections
+        for _ in range(len(processes)):
+            results = result_queue.get()
+            for idx, wigner_D in results:
+                rotation_matrices[idx] = wigner_D.to(self.device)
+        
+        # Wait for all processes to finish
+        for p in processes:
+            p.join()
+        
+        print(f"✓ Computed {len(rotation_matrices)} rotation matrices")
+        return rotation_matrices
+    
+    def _compute_single_rotation(self, proj_vec: torch.Tensor) -> torch.Tensor:
+        """
+        Compute a single Wigner D-matrix for a projection vector.
+        
+        Parameters
+        ----------
+        proj_vec : torch.Tensor
+            Projection direction vector (3,)
+        
+        Returns
+        -------
+        wigner_D : torch.Tensor
+            Block-diagonal Wigner D-matrix (45x45 for ell_max=8)
+        """
+        # Get rotation matrix (3x3)
+        R = self._rotation_matrix_to_align_vector(proj_vec)
+        
+        # Convert to Euler angles
+        R_cpu = R.cpu() if R.is_cuda else R
+        alpha, beta, gamma = o3.matrix_to_angles(R_cpu)
+        
+        # Build block-diagonal Wigner D-matrix for even-ℓ only
+        D_blocks = []
+        for ell in range(0, self.ell_max + 1, 2):  # Even ℓ only
+            # Wigner D-matrix for this ℓ
+            D_ell = o3.wigner_D(ell, alpha, beta, gamma)
+            D_blocks.append(D_ell)
+        
+        # Combine into block-diagonal matrix
+        wigner_D = torch.block_diag(*D_blocks)
+        
+        return wigner_D
     
     def _rotate_sh_coefficients(
         self, 
@@ -293,14 +545,19 @@ class SphericalHarmonicSliceProjector:
         phi_samples: Optional[int] = 360
     ) -> torch.Tensor:
         """
-        Project spherical harmonic volume to circular slices.
+        Project spherical harmonic coefficients to circular slices.
+        
+        For SAXS tensor tomography: input is organized by projection, where
+        coeffs[i] corresponds to projection_vectors[i].
         
         Parameters
         ----------
         coeffs : torch.Tensor
             Spherical harmonic coefficients with shape:
-            - (X, Y, Z, num_coeffs) for a volume of voxels, or
-            - (num_coeffs,) for a single point
+            - (num_projections, X, Y, num_coeffs) for projections of a volume
+            - (num_projections, num_coeffs) for projections of a single point
+            - (X, Y, num_coeffs) for a single projection slice (will use first projection vector)
+            - (num_coeffs,) for a single point (will use first projection vector)
         output_type : str
             Type of output to return:
             - 'coefficients': Returns ~25 Fourier/harmonic coefficients per slice (compact)
@@ -313,11 +570,11 @@ class SphericalHarmonicSliceProjector:
         slices : torch.Tensor
             Projected slices with shape:
             - If output_type='coefficients':
-              - (num_projections, num_surviving_coeffs) for single point (~25 coeffs)
-              - (num_projections, X, Y, Z, num_surviving_coeffs) for volume
+              - (num_projections, X, Y, num_surviving_coeffs) for volume projections
+              - (num_projections, num_surviving_coeffs) for point projections
             - If output_type='samples':
-              - (num_projections, phi_samples) for single point
-              - (num_projections, X, Y, Z, phi_samples) for volume
+              - (num_projections, X, Y, phi_samples) for volume projections
+              - (num_projections, phi_samples) for point projections
         """
         if output_type not in ['coefficients', 'samples']:
             raise ValueError(f"output_type must be 'coefficients' or 'samples', got '{output_type}'")
@@ -325,24 +582,42 @@ class SphericalHarmonicSliceProjector:
         # Ensure coeffs is on the correct device
         coeffs = coeffs.to(self.device)
         
-        # Determine input shape
-        input_shape = coeffs.shape[:-1]  # Everything except num_coeffs
-        is_volume = len(input_shape) > 0
-        
-        if is_volume:
-            # Reshape to (batch, num_coeffs) for easier processing
-            batch_size = int(np.prod(input_shape))
-            coeffs_flat = coeffs.reshape(batch_size, -1)
+        # Determine input format
+        if coeffs.shape[0] == self.num_projections:
+            # Input is (num_projections, ..., num_coeffs)
+            # This is the standard SAXS-TT format
+            has_projection_dim = True
+            spatial_shape = coeffs.shape[1:-1]  # Everything between num_proj and num_coeffs
         else:
-            coeffs_flat = coeffs.unsqueeze(0)
-            batch_size = 1
+            # Input is (..., num_coeffs) - single projection
+            # Will use first projection vector
+            has_projection_dim = False
+            spatial_shape = coeffs.shape[:-1]
+            # Add projection dimension
+            coeffs = coeffs.unsqueeze(0)  # (1, ..., num_coeffs)
+        
+        # Flatten spatial dimensions: (num_proj, ..., num_coeffs) -> (num_proj, batch, num_coeffs)
+        num_proj = coeffs.shape[0]
+        if len(spatial_shape) > 0:
+            batch_size = int(np.prod(spatial_shape))
+            coeffs_flat = coeffs.reshape(num_proj, batch_size, -1)
+            is_volume = True
+        else:
+            # Single point per projection
+            coeffs_flat = coeffs.reshape(num_proj, 1, -1)
+            is_volume = False
+            spatial_shape = ()
         
         if output_type == 'coefficients':
             # Return compact harmonic coefficients representation
-            return self._project_to_harmonic_coefficients(coeffs, coeffs_flat, is_volume, input_shape)
+            return self._project_to_harmonic_coefficients_matched(
+                coeffs_flat, is_volume, spatial_shape, has_projection_dim
+            )
         else:
             # Return evaluated samples at phi angles
-            return self._project_to_phi_samples(coeffs_flat, is_volume, input_shape, phi_samples)
+            return self._project_to_phi_samples_matched(
+                coeffs_flat, is_volume, spatial_shape, phi_samples, has_projection_dim
+            )
     
     def _project_to_harmonic_coefficients(
         self,
@@ -400,6 +675,114 @@ class SphericalHarmonicSliceProjector:
         
         return result
     
+    def _project_to_harmonic_coefficients_matched(
+        self,
+        coeffs_flat: torch.Tensor,
+        is_volume: bool,
+        spatial_shape: tuple,
+        has_projection_dim: bool
+    ) -> torch.Tensor:
+        """
+        Project to compact harmonic coefficients with matched projections.
+        
+        Each projection's coefficients are evaluated in its corresponding direction.
+        
+        Parameters
+        ----------
+        coeffs_flat : torch.Tensor
+            Shape (num_proj, batch, num_coeffs)
+        """
+        # Mask for surviving terms (even ℓ+m)
+        ell_plus_m = self.ell_indices + self.m_indices
+        surviving_mask = (ell_plus_m % 2 == 0)
+        num_surviving = int(surviving_mask.sum())
+        
+        # Convert to tensor
+        surviving_mask_tensor = torch.from_numpy(surviving_mask).to(self.device)
+        legendre_tensor = torch.tensor(
+            self.legendre_at_zero,
+            device=self.device,
+            dtype=coeffs_flat.dtype
+        )
+        
+        # Apply P_ℓ^m(0) restriction: c_ℓm → c_ℓm * P_ℓ^m(0)
+        # Broadcasting: (num_proj, batch, num_coeffs) * (num_coeffs,)
+        restricted_coeffs = coeffs_flat * legendre_tensor.unsqueeze(0).unsqueeze(0)
+        
+        if self.use_rotation:
+            # Apply rotation for each projection to its corresponding direction
+            result_list = []
+            for proj_idx in range(coeffs_flat.shape[0]):
+                rotated_coeffs = self._rotate_sh_coefficients(
+                    restricted_coeffs[proj_idx], proj_idx
+                )
+                # Extract only surviving coefficients
+                surviving_coeffs = rotated_coeffs[:, surviving_mask_tensor]
+                result_list.append(surviving_coeffs)
+            
+            # Stack: (num_proj, batch, num_surviving)
+            result = torch.stack(result_list, dim=0)
+        else:
+            # Without rotation: just extract surviving coefficients
+            # (num_proj, batch, num_coeffs) -> (num_proj, batch, num_surviving)
+            result = restricted_coeffs[:, :, surviving_mask_tensor]
+        
+        # Reshape back to spatial dimensions
+        if is_volume:
+            result = result.reshape(coeffs_flat.shape[0], *spatial_shape, num_surviving)
+        else:
+            result = result.squeeze(1)  # (num_proj, num_surviving)
+        
+        # Remove projection dim if input didn't have it
+        if not has_projection_dim:
+            result = result.squeeze(0)
+        
+        return result
+    
+    def _project_to_phi_samples_matched(
+        self,
+        coeffs_flat: torch.Tensor,
+        is_volume: bool,
+        spatial_shape: tuple,
+        phi_samples: int,
+        has_projection_dim: bool
+    ) -> torch.Tensor:
+        """
+        Project to phi samples with matched projections.
+        
+        Each projection's coefficients are evaluated in its corresponding direction.
+        
+        Parameters
+        ----------
+        coeffs_flat : torch.Tensor
+            Shape (num_proj, batch, num_coeffs)
+        """
+        # Step 1: Get compact harmonic coefficients for each projection
+        harmonic_coeffs = self._project_to_harmonic_coefficients_matched(
+            coeffs_flat, is_volume=True, spatial_shape=(coeffs_flat.shape[1],), 
+            has_projection_dim=True
+        )
+        # harmonic_coeffs shape: (num_proj, batch, num_surviving)
+        
+        # Step 2: Evaluate at phi angles
+        phi = torch.linspace(0, 2*np.pi, phi_samples, device=self.device)
+        
+        # Use the optimized evaluation
+        slices = self._evaluate_harmonic_coefficients(harmonic_coeffs, phi)
+        # slices shape: (num_proj, batch, phi_samples)
+        
+        # Reshape back to spatial dimensions
+        if is_volume:
+            slices = slices.reshape(coeffs_flat.shape[0], *spatial_shape, phi_samples)
+        else:
+            slices = slices.squeeze(1)  # (num_proj, phi_samples)
+        
+        # Remove projection dim if input didn't have it
+        if not has_projection_dim:
+            slices = slices.squeeze(0)
+        
+        return slices
+    
     def _project_to_phi_samples(
         self,
         coeffs_flat: torch.Tensor,
@@ -410,25 +793,36 @@ class SphericalHarmonicSliceProjector:
         """
         Project to evaluated samples at phi angles (for visualization).
         
+        GPU-optimized: First computes harmonic coefficients, then samples from them.
+        
         Returns function values at phi_samples angles around each slice.
         """
-        # Create phi samples
-        phi = torch.linspace(0, 2*np.pi, phi_samples, device=self.device)
+        # Step 1: Get compact harmonic coefficients
+        # We need to pass the original coeffs too for compatibility
+        if is_volume:
+            coeffs_original = coeffs_flat.reshape(*input_shape, -1)
+        else:
+            coeffs_original = coeffs_flat.squeeze(0)
         
-        # Evaluate at equator for all projections
-        slice_values_list = []
+        harmonic_coeffs = self._project_to_harmonic_coefficients(
+            coeffs_original, coeffs_flat, is_volume, input_shape
+        )
         
-        for proj_idx in range(self.num_projections):
-            # Rotate coefficients (if enabled)
-            rotated_coeffs = self._rotate_sh_coefficients(coeffs_flat, proj_idx)
-            
-            # Evaluate at equator (θ=π/2) for all φ
-            slice_values = self._evaluate_equator_slice(rotated_coeffs, phi)
-            
-            slice_values_list.append(slice_values)
+        # harmonic_coeffs shape: (num_projections, batch, num_surviving) or (num_projections, num_surviving)
         
-        # Stack all projections
-        slices = torch.stack(slice_values_list, dim=0)  # (num_proj, batch, phi_samples)
+        # Step 2: Evaluate harmonic coefficients at phi sample points
+        phi = torch.linspace(0, np.pi, phi_samples, device=self.device)
+        
+        # Reshape to (num_projections, batch, num_surviving) if needed
+        if not is_volume:
+            harmonic_coeffs = harmonic_coeffs.unsqueeze(1)  # (num_proj, 1, num_surviving)
+        else:
+            # Flatten spatial dimensions: (num_proj, X, Y, Z, num_surviving) -> (num_proj, batch, num_surviving)
+            batch_size = int(np.prod(input_shape))
+            harmonic_coeffs = harmonic_coeffs.reshape(self.num_projections, batch_size, -1)
+        
+        # Step 3: Evaluate the surviving harmonic coefficients at phi angles
+        slices = self._evaluate_harmonic_coefficients(harmonic_coeffs, phi)
         
         # Reshape back to original spatial dimensions
         if is_volume:
@@ -438,72 +832,56 @@ class SphericalHarmonicSliceProjector:
         
         return slices
     
-    def _evaluate_equator_slice(
+    def _evaluate_harmonic_coefficients(
         self,
-        coeffs: torch.Tensor,
+        harmonic_coeffs: torch.Tensor,
         phi: torch.Tensor
     ) -> torch.Tensor:
         """
-        Evaluate spherical function on equator (θ=π/2).
+        Evaluate compact harmonic coefficients at phi sample points.
+        
+        This takes the output of _project_to_harmonic_coefficients (the ~25 surviving
+        Fourier coefficients) and evaluates them at specific φ angles.
+        
+        GPU-optimized vectorized implementation.
         
         Parameters
         ----------
-        coeffs : torch.Tensor
-            Shape (batch, num_coeffs) spherical harmonic coefficients
+        harmonic_coeffs : torch.Tensor
+            Shape (num_projections, batch, num_surviving) compact harmonic coefficients
         phi : torch.Tensor
             Shape (phi_samples,) azimuthal angles
         
         Returns
         -------
         values : torch.Tensor
-            Shape (batch, phi_samples) function values on the equator
+            Shape (num_projections, batch, phi_samples) function values
         """
-        batch_size = coeffs.shape[0]
-        phi_samples = phi.shape[0]
+        # Initialize cached values if needed
+        if not hasattr(self, '_surviving_m'):
+            ell_plus_m = self.ell_indices + self.m_indices
+            self._surviving_m = torch.tensor(
+                self.m_indices[ell_plus_m % 2 == 0],
+                device=self.device,
+                dtype=torch.long
+            )
         
-        # Initialize output
-        values = torch.zeros(
-            batch_size, phi_samples,
-            device=self.device,
-            dtype=coeffs.dtype
-        )
+        # Compute angular basis functions
+        # Shape: (num_surviving, phi_samples)
+        m_values = self._surviving_m.unsqueeze(1)  # (num_surviving, 1)
+        phi_grid = phi.unsqueeze(0)  # (1, phi_samples)
         
-        # Convert Legendre values to tensor
-        legendre_tensor = torch.tensor(
-            self.legendre_at_zero,
-            device=self.device,
-            dtype=coeffs.dtype
-        )
+        # Angular part: cos(mφ) for m≥0, sin(|m|φ) for m<0
+        # Match dtype to harmonic_coeffs
+        angular_basis = torch.where(
+            m_values >= 0,
+            torch.cos(m_values.float() * phi_grid),
+            torch.sin(torch.abs(m_values.float()) * phi_grid)
+        ).to(harmonic_coeffs.dtype)  # (num_surviving, phi_samples)
         
-        # Compute for each coefficient
-        for i, (ell, m) in enumerate(zip(self.ell_indices, self.m_indices)):
-            abs_m = abs(m)
-            
-            # Skip terms where P_ℓ^m(0) = 0 (ℓ+m odd)
-            if (ell + abs_m) % 2 != 0:
-                continue
-            
-            # Get coefficient values
-            c = coeffs[:, i]  # (batch,)
-            
-            # Get P_ℓ^m(0) value
-            P_lm_0 = legendre_tensor[i]
-            
-            # Compute angular part: e^(imφ) = cos(mφ) + i·sin(mφ)
-            # For real coefficients, we use real/imaginary parts
-            if m >= 0:
-                # Positive m: use cos(mφ)
-                angular = torch.cos(m * phi)  # (phi_samples,)
-            else:
-                # Negative m: use sin(|m|φ)
-                angular = torch.sin(abs_m * phi)
-            
-            # The Legendre values already include spherical harmonic normalization
-            # No additional normalization needed here
-            
-            # Add contribution: c * P_ℓ^m(0) * angular_part
-            # Broadcasting: (batch, 1) * (phi_samples,) -> (batch, phi_samples)
-            values += (c.unsqueeze(1) * P_lm_0 * angular)
+        # Evaluate: (num_proj, batch, num_surviving) @ (num_surviving, phi_samples)
+        # -> (num_proj, batch, phi_samples)
+        values = torch.matmul(harmonic_coeffs, angular_basis)
         
         return values
     
