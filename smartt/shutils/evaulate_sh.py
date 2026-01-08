@@ -254,6 +254,7 @@ def forward_quadrature(
     ell_max: int,
     mode: str = "simpson",
     projection_matrix: Union[NDArray, torch.Tensor, None] = None,
+    mumott_compat: bool = True,
 ) -> torch.Tensor:
     """Evaluate spherical harmonic expansions and integrate along detector segments.
 
@@ -265,8 +266,8 @@ def forward_quadrature(
         each detector segment.  ``N`` is the number of tomographic
         projections, ``M`` the number of detector segments per
         projection, and ``I`` the number of sampling points per
-        segment.  This parameter is ignored if ``projection_matrix`` is
-        provided.
+        segment.  This parameter is used to determine the scaling factor
+        when ``mumott_compat=True`` and ``projection_matrix`` is provided.
     coeffs : torch.Tensor
         A tensor of spherical harmonic coefficients of shape
         ``(N, H, W, C)``, where ``H`` and ``W`` are arbitrary spatial
@@ -295,6 +296,13 @@ def forward_quadrature(
         class, which uses adaptive quadrature for more accurate integration.
         The matrix can be obtained from ``basis_set.projection_matrix``
         where ``basis_set`` is a mumott ``SphericalHarmonics`` instance.
+    mumott_compat : bool, optional
+        If True (default) and ``projection_matrix`` is provided, applies a
+        scaling factor of ``n_samples * n_segments`` to match mumott's
+        ``SphericalHarmonics.forward`` output.  mumott's forward method
+        sums over all sample points without normalizing, while this function
+        would otherwise produce normalized results.  Set to False to disable
+        this scaling if you've already accounted for it in your projection_matrix.
 
     Returns
     -------
@@ -352,7 +360,20 @@ def forward_quadrature(
             )
         
         # Compute forward: out[n,h,w,m] = sum_c coeffs[n,h,w,c] * pm[n,m,c]
-        return torch.einsum("nhwc,nmc->nhwm", coeffs, pm)
+        result = torch.einsum("nhwc,nmc->nhwm", coeffs, pm)
+        
+        # Apply mumott compatibility scaling if requested
+        # mumott's SphericalHarmonics.forward sums over all sample points without
+        # normalizing, effectively multiplying by (n_samples * n_segments).
+        # The projection_matrix from mumott contains raw SH evaluations at sample
+        # points, so we need to scale by this factor to match mumott's output.
+        if mumott_compat and hasattr(coords, "vector"):
+            n_segments = coords.vector.shape[1]  # M
+            n_samples = coords.vector.shape[2]   # I
+            scale_factor = n_samples * n_segments
+            result = result * scale_factor
+        
+        return result
     
     # Otherwise, compute projection matrix from coords
     # For even ℓ up to ell_max, the number of coefficients is (ell_max//2 + 1)*(ell_max + 1)
