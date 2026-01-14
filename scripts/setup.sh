@@ -7,6 +7,8 @@ python -m pip install -e .
 cd /myhome/smartt/
 python -m pip install -e .
 python -m pip install joblib
+python -m pip install ipywidgets
+
 
 python -m pip install e3nn
 
