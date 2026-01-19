@@ -427,44 +427,55 @@ class PyTorchProjectorOptimized:
         self.scale_factor = depth_step  # Weight each sample by the step size
     
     def _compute_grid_batch(self, start_idx: int, end_idx: int) -> torch.Tensor:
-        """Compute sampling grids for a batch of projections on-the-fly."""
+        """Compute sampling grids for a batch of projections on-the-fly.
+        
+        Fully vectorized implementation using broadcasting instead of loops.
+        """
         X, Y, Z = self.vol_shape
         J, K = self.proj_shape
         batch_size = end_idx - start_idx
         n_depth = self.n_depth_samples
         
-        grids = []
-        for i in range(start_idx, end_idx):
-            vec = self.vectors[i]
-            ray = vec[0:3]  # Ray direction
-            det_center = vec[3:6]  # Detector center
-            u = vec[6:9]  # Detector row direction (unit vector * pixel size)
-            v = vec[9:12]  # Detector column direction (unit vector * pixel size)
-            
-            # Build meshgrid of detector coordinates and depth
-            # Shape: (n_depth, K, J)
-            t_grid, k_grid, j_grid = torch.meshgrid(
-                self.t_coords, self.k_coords, self.j_coords, indexing='ij'
-            )
-            
-            # Compute 3D sample points:
-            # point = det_center + j * u + k * v + t * ray
-            # Shape: (n_depth, K, J, 3)
-            points = (det_center.view(1, 1, 1, 3) +
-                     j_grid.unsqueeze(-1) * u.view(1, 1, 1, 3) +
-                     k_grid.unsqueeze(-1) * v.view(1, 1, 1, 3) +
-                     t_grid.unsqueeze(-1) * ray.view(1, 1, 1, 3))
-            
-            # Normalize to [-1, 1] for grid_sample
-            # grid_sample expects (x, y, z) which maps to (W, H, D) in input
-            # ASTRA volume is (Z_slices, Y_rows, X_cols) = (GridSliceCount, GridRowCount, GridColCount)
-            # In our convention: X=cols, Y=rows, Z=slices
-            # The points are in ASTRA world coordinates, need to map to normalized coords
-            points_normalized = (points - self.vol_center) / self.vol_scale
-            
-            grids.append(points_normalized)
+        # Extract batch of vectors: (batch_size, 12)
+        vecs_batch = self.vectors[start_idx:end_idx]
         
-        return torch.stack(grids, dim=0)  # (batch_size, n_depth, K, J, 3)
+        # Extract components for the batch
+        rays = vecs_batch[:, 0:3]  # (batch_size, 3)
+        det_centers = vecs_batch[:, 3:6]  # (batch_size, 3)
+        u_vecs = vecs_batch[:, 6:9]  # (batch_size, 3)
+        v_vecs = vecs_batch[:, 9:12]  # (batch_size, 3)
+        
+        # Build meshgrid of detector coordinates and depth
+        # Shape: (n_depth, K, J)
+        t_grid, k_grid, j_grid = torch.meshgrid(
+            self.t_coords, self.k_coords, self.j_coords, indexing='ij'
+        )
+        
+        # Reshape for broadcasting: add batch dimension
+        # t_grid, k_grid, j_grid: (1, n_depth, K, J)
+        t_grid = t_grid.unsqueeze(0)
+        k_grid = k_grid.unsqueeze(0)
+        j_grid = j_grid.unsqueeze(0)
+        
+        # Reshape geometry vectors for broadcasting: (batch_size, 1, 1, 1, 3)
+        rays = rays.view(batch_size, 1, 1, 1, 3)
+        det_centers = det_centers.view(batch_size, 1, 1, 1, 3)
+        u_vecs = u_vecs.view(batch_size, 1, 1, 1, 3)
+        v_vecs = v_vecs.view(batch_size, 1, 1, 1, 3)
+        
+        # Compute 3D sample points using broadcasting:
+        # point = det_center + j * u + k * v + t * ray
+        # Shape: (batch_size, n_depth, K, J, 3)
+        points = (det_centers +
+                 j_grid.unsqueeze(-1) * u_vecs +
+                 k_grid.unsqueeze(-1) * v_vecs +
+                 t_grid.unsqueeze(-1) * rays)
+        
+        # Normalize to [-1, 1] for grid_sample
+        # vol_center and vol_scale: (3,) -> reshape to (1, 1, 1, 1, 3)
+        points_normalized = (points - self.vol_center.view(1, 1, 1, 1, 3)) / self.vol_scale.view(1, 1, 1, 1, 3)
+        
+        return points_normalized  # (batch_size, n_depth, K, J, 3)
     
     def forward(self, volume: torch.Tensor, batch_size: int = 16) -> torch.Tensor:
         """Forward projection with memory-efficient batching.
