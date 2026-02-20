@@ -8,6 +8,7 @@ cd /myhome/smartt/
 python -m pip install -e .
 python -m pip install joblib
 python -m pip install ipywidgets
+pip install --upgrade coverage pytest-cov
 
 
 python -m pip install e3nn
