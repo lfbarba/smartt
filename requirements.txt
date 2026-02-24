@@ -12,3 +12,4 @@ ipywidgets
 joblib
 coverage
 pytest-cov
+lovely_tensors
