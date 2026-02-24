@@ -444,6 +444,7 @@ def _log_metrics_to_wandb(
         "num_projections": k,
         # Coefficient-based
         "mse_coefficients": metrics.mse_coefficients,
+        "mae_coefficients": metrics.mae_coefficients,
         "normalized_mse_coefficients": metrics.normalized_mse_coefficients,
     }
 
@@ -452,14 +453,16 @@ def _log_metrics_to_wandb(
         log_dict.update(
             {
                 "projection/mse_global": pm.mse_global,
+                "projection/mae_global": pm.mae_global,
                 "projection/psnr_global_dB": pm.psnr_global,
                 "projection/ssim_global": pm.ssim_global,
             }
         )
-        for ch_i, (mse_c, psnr_c, ssim_c) in enumerate(
-            zip(pm.mse_per_channel, pm.psnr_per_channel, pm.ssim_per_channel)
+        for ch_i, (mse_c, mae_c, psnr_c, ssim_c) in enumerate(
+            zip(pm.mse_per_channel, pm.mae_per_channel, pm.psnr_per_channel, pm.ssim_per_channel)
         ):
             log_dict[f"projection/mse_ch{ch_i:02d}"] = mse_c
+            log_dict[f"projection/mae_ch{ch_i:02d}"] = mae_c
             log_dict[f"projection/psnr_ch{ch_i:02d}_dB"] = psnr_c
             log_dict[f"projection/ssim_ch{ch_i:02d}"] = ssim_c
 
@@ -480,6 +483,7 @@ def _log_metrics_to_wandb(
         log_dict.update(
             {
                 "real_space/mse": rs.mse,
+                "real_space/mae": rs.mae,
                 "real_space/psnr_dB": rs.psnr,
                 "real_space/ssim": rs.ssim,
                 "real_space/n_directions": rs.n_directions,
@@ -676,15 +680,16 @@ def run_benchmark(
     metrics = compare_reconstructions(
         reconstruction_pred=sparse_reconstruction,
         reconstruction_gt=gt_reconstruction,
-        geometry=new_geometry,
+        geometry=reference_geometry,  # used only as reference for Fibonacci eval grid
         ell_max=ell_max,
         mask=None,
-        weights=synthetic_dc.projections.weights,
+        weights=None,  # no bad pixels on Fibonacci eval grid
         compute_projection_metrics=True,
         compute_orientation_metrics=True,
         compute_real_space_metrics=True,
         real_space_resolution_in_degrees=real_space_resolution_deg,
         real_space_half_sphere=True,
+        n_fibonacci_eval_projections=1000,  # unbiased held-out eval geometry
         verbose=verbose,
     )
 

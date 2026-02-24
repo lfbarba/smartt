@@ -22,58 +22,51 @@ from mumott.data_handling import DataContainer
 from scipy.spatial.transform import Rotation as R
 
 
-def fibonacci_hemisphere(n_points: int, upper: bool = True) -> np.ndarray:
+def fibonacci_hemisphere(
+    n_points: int,
+    upper: bool = True,
+    missing_wedge_angle: float = 45.0,
+) -> np.ndarray:
     """
-    Generate approximately evenly distributed points on a hemisphere using the Fibonacci spiral method.
-    
+    Generate approximately evenly distributed points on a hemisphere using the Fibonacci spiral method,
+    respecting a missing wedge constraint.
+
+    Points are sampled over the accessible angular range, from the equator (theta = 90°) up to
+    ``missing_wedge_angle`` degrees from the beam axis (z-axis). Directions within the missing
+    wedge (theta < ``missing_wedge_angle``) are excluded.
+
     Parameters
     ----------
     n_points : int
-        Number of points to generate on the hemisphere.
+        Number of points to generate.
     upper : bool
-        If True, generate points on upper hemisphere (z >= 0), else lower hemisphere.
-        
+        If True, generate points on the upper hemisphere (z >= 0), else lower hemisphere (z <= 0).
+    missing_wedge_angle : float
+        Half-opening angle of the missing wedge in degrees, measured from the z-axis (beam axis).
+        Directions with polar angle smaller than this value are excluded.
+        Default is 45.0°, corresponding to a ±45° tilt range.
+
     Returns
     -------
     np.ndarray
         Array of shape (n_points, 3) with (x, y, z) coordinates on the unit hemisphere.
     """
-    # Use 2x points on full sphere and take the hemisphere
-    n_full = 2 * n_points
-    phi = np.pi * (3.0 - np.sqrt(5.0))  # golden angle in radians
-    
-    points = []
-    for i in range(n_full):
-        # z goes from 1 to -1 (z is the vertical axis)
-        z = 1 - (i / float(n_full - 1)) * 2
-        radius = np.sqrt(1 - z * z)
-        theta = phi * i
-        
-        x = np.cos(theta) * radius
-        y = np.sin(theta) * radius
-        
-        # Filter for the desired hemisphere
-        if upper and z >= 0:
-            points.append([x, y, z])
-        elif not upper and z <= 0:
-            points.append([x, y, z])
-            
-        if len(points) >= n_points:
-            break
-    
-    # If we don't have enough points (rare edge case), fill with remaining
-    while len(points) < n_points:
-        i = len(points)
-        z = abs(1 - (i / float(n_full - 1)) * 2)
-        if not upper:
-            z = -z
-        radius = np.sqrt(1 - z * z)
-        theta = phi * i
-        x = np.cos(theta) * radius
-        y = np.sin(theta) * radius
-        points.append([x, y, z])
-    
-    return np.array(points[:n_points])
+    golden_angle = np.pi * (3.0 - np.sqrt(5.0))  # golden angle in radians
+    points = np.zeros((n_points, 3))
+
+    # boundary_z = cos(missing_wedge_angle) is the maximum |z| value accessible
+    boundary_z = np.cos(np.radians(missing_wedge_angle))
+
+    for i in range(n_points):
+        # z increases linearly from 0 (equator) to boundary_z (missing-wedge boundary)
+        z = i / (n_points - 1) * boundary_z if n_points > 1 else 0.0
+        theta = np.arccos(z)
+        phi = i * golden_angle
+        x = np.sin(theta) * np.cos(phi)
+        y = np.sin(theta) * np.sin(phi)
+        points[i] = [x, y, z if upper else -z]
+
+    return points
 
 
 def cartesian_to_spherical(xyz: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -248,10 +241,12 @@ def create_geometry_from_directions(
         else:
             # Use provided or default axes and compute rotation from angles
             proj_inner_axis = np.array(reference_geometry.inner_axes[i]) \
-                if (reference_geometry is not None and hasattr(reference_geometry, 'inner_axes')) \
+                if (reference_geometry is not None and hasattr(reference_geometry, 'inner_axes')
+                    and i < len(reference_geometry.inner_axes)) \
                 else inner_axis
             proj_outer_axis = np.array(reference_geometry.outer_axes[i]) \
-                if (reference_geometry is not None and hasattr(reference_geometry, 'outer_axes')) \
+                if (reference_geometry is not None and hasattr(reference_geometry, 'outer_axes')
+                    and i < len(reference_geometry.outer_axes)) \
                 else outer_axis
             rotation = create_rotation_matrix(
                 inner_angles[i], outer_angles[i],

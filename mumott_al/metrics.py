@@ -2,8 +2,9 @@
 Metrics for comparing tensor tomography reconstructions.
 
 This module provides various metrics to compare reconstructions:
-- Coefficient-based metrics (MSE, normalized MSE)
-- Projection-based metrics (MSE, PSNR, SSIM per channel and global)
+- Coefficient-based metrics (MSE, MAE, normalized MSE)
+- Projection-based metrics (MSE, MAE, PSNR, SSIM per channel and global)
+- Real-space metrics (MSE, MAE, PSNR, SSIM)
 - Orientation-based metrics (cosine similarity of principal directions)
 """
 
@@ -23,6 +24,8 @@ class ProjectionMetricsResult:
     """Container for projection-based metrics results."""
     mse_per_channel: np.ndarray
     mse_global: float
+    mae_per_channel: np.ndarray
+    mae_global: float
     psnr_per_channel: np.ndarray
     psnr_global: float
     ssim_per_channel: np.ndarray
@@ -47,6 +50,7 @@ class RealSpaceMetricsResult:
     psnr: float
     ssim: float
     mse: float
+    mae: float
     resolution_in_degrees: int
     n_directions: int
 
@@ -55,6 +59,7 @@ class RealSpaceMetricsResult:
 class ReconstructionComparisonResult:
     """Container for all reconstruction comparison metrics."""
     mse_coefficients: float
+    mae_coefficients: float
     normalized_mse_coefficients: float
     projection_metrics: Optional[ProjectionMetricsResult]
     orientation_metrics: Optional[OrientationMetricsResult]
@@ -98,6 +103,39 @@ def mse_coefficients(
         gt_masked = reconstruction_gt.flatten()
     
     return np.mean((pred_masked - gt_masked) ** 2)
+
+
+def mae_coefficients(
+    reconstruction_pred: np.ndarray,
+    reconstruction_gt: np.ndarray,
+    mask: Optional[np.ndarray] = None,
+) -> float:
+    """
+    Compute Mean Absolute Error of spherical harmonic coefficients.
+
+    Parameters
+    ----------
+    reconstruction_pred : np.ndarray
+        Predicted reconstruction with shape (x, y, z, n_coefficients).
+    reconstruction_gt : np.ndarray
+        Ground truth reconstruction with shape (x, y, z, n_coefficients).
+    mask : np.ndarray, optional
+        Binary mask of shape (x, y, z) to select voxels for comparison.
+        If None, all voxels are used.
+
+    Returns
+    -------
+    float
+        Mean absolute error of the coefficients.
+    """
+    if mask is not None:
+        pred_masked = reconstruction_pred[mask > 0]
+        gt_masked = reconstruction_gt[mask > 0]
+    else:
+        pred_masked = reconstruction_pred.flatten()
+        gt_masked = reconstruction_gt.flatten()
+
+    return np.mean(np.abs(pred_masked - gt_masked))
 
 
 def normalized_mse_coefficients(
@@ -336,8 +374,9 @@ def real_space_metrics(
     real_pred = pred_flat @ Y.T  # (n_voxels, n_directions)
     real_gt = gt_flat @ Y.T
 
-    # Global MSE and PSNR
+    # Global MSE, MAE and PSNR
     mse_val = float(np.mean((real_pred - real_gt) ** 2))
+    mae_val = float(np.mean(np.abs(real_pred - real_gt)))
     data_range = _percentile_data_range(real_gt, percentile_low, percentile_high)
     psnr_val = _compute_psnr(real_pred, real_gt, data_range)
 
@@ -377,6 +416,7 @@ def real_space_metrics(
         psnr=psnr_val,
         ssim=ssim_val,
         mse=mse_val,
+        mae=mae_val,
         resolution_in_degrees=resolution_in_degrees,
         n_directions=n_directions,
     )
@@ -480,6 +520,7 @@ def projection_metrics(
 
     # Compute per-channel metrics
     mse_per_channel = np.zeros(n_channels)
+    mae_per_channel = np.zeros(n_channels)
     psnr_per_channel = np.zeros(n_channels)
     ssim_per_channel = np.zeros(n_channels)
 
@@ -499,10 +540,13 @@ def projection_metrics(
             continue
         channel_data_range = _percentile_data_range(gt_valid, percentile_low, percentile_high)
 
-        # Weighted MSE: sum(w * err²) / sum(w)
-        sq_err_c = (pred_c - gt_c) ** 2
+        # Weighted MSE and MAE: sum(w * err) / sum(w)
+        err_c = pred_c - gt_c
+        sq_err_c = err_c ** 2
+        abs_err_c = np.abs(err_c)
         w_sum_c = w_c[valid_c].sum()
         mse_per_channel[c] = float(np.sum(w_c[valid_c] * sq_err_c[valid_c]) / w_sum_c)
+        mae_per_channel[c] = float(np.sum(w_c[valid_c] * abs_err_c[valid_c]) / w_sum_c)
 
         # PSNR from weighted MSE
         psnr_per_channel[c] = (
@@ -530,10 +574,13 @@ def projection_metrics(
         ssim_per_channel[c] = float(np.mean(ssim_map))
 
     # Global metrics across all channels
-    # Weighted global MSE
-    sq_err_all = (proj_pred - proj_gt) ** 2
+    # Weighted global MSE and MAE
+    err_all = proj_pred - proj_gt
+    sq_err_all = err_all ** 2
+    abs_err_all = np.abs(err_all)
     w_sum_all = w[valid].sum()
     mse_global = float(np.sum(w[valid] * sq_err_all[valid]) / w_sum_all) if w_sum_all > 0 else 0.0
+    mae_global = float(np.sum(w[valid] * abs_err_all[valid]) / w_sum_all) if w_sum_all > 0 else 0.0
     global_data_range = _percentile_data_range(proj_gt[valid], percentile_low, percentile_high)
     psnr_global = (
         float('inf') if mse_global == 0
@@ -544,6 +591,8 @@ def projection_metrics(
     return ProjectionMetricsResult(
         mse_per_channel=mse_per_channel,
         mse_global=mse_global,
+        mae_per_channel=mae_per_channel,
+        mae_global=mae_global,
         psnr_per_channel=psnr_per_channel,
         psnr_global=psnr_global,
         ssim_per_channel=ssim_per_channel,
@@ -678,6 +727,7 @@ def compare_reconstructions(
     percentile_high: float = 95.0,
     real_space_resolution_in_degrees: int = 10,
     real_space_half_sphere: bool = True,
+    n_fibonacci_eval_projections: int = 0,
     verbose: bool = False,
 ) -> ReconstructionComparisonResult:
     """
@@ -690,8 +740,11 @@ def compare_reconstructions(
     reconstruction_gt : np.ndarray
         Ground truth reconstruction with shape (x, y, z, n_coefficients).
     geometry : Geometry, optional
-        Geometry object for projection-based metrics. Required if
-        compute_projection_metrics=True.
+        Geometry object for projection-based metrics.  Required when
+        *compute_projection_metrics* is True.  When
+        *n_fibonacci_eval_projections* > 0 this geometry is used only as a
+        reference to copy detector / volume parameters from; the actual
+        evaluation directions are a fresh Fibonacci grid.
     ell_max : int
         Maximum spherical harmonic order (default: 8).
     mask : np.ndarray, optional
@@ -701,6 +754,16 @@ def compare_reconstructions(
         ``(n_projections, det_x, det_y)`` or
         ``(n_projections, det_x, det_y, n_channels)``.  Passed directly to
         :func:`projection_metrics`.  Pixels with weight 0 are excluded.
+        Ignored when *n_fibonacci_eval_projections* > 0.
+    n_fibonacci_eval_projections : int
+        When > 0, the projection metrics are evaluated on a Fibonacci
+        hemisphere grid with this many directions instead of the training
+        geometry passed in *geometry*.  This avoids the in-sample bias that
+        arises when the evaluation geometry coincides with the geometry
+        the reconstruction was trained on.  ``geometry`` is still required
+        as a reference for detector / volume metadata.  All pixels are
+        treated as equally valid (no bad-pixel mask).  Default: 0 (disabled,
+        use *geometry* directly).
     compute_projection_metrics : bool
         Whether to compute projection-based metrics (default: True).
     compute_orientation_metrics : bool
@@ -739,23 +802,42 @@ def compare_reconstructions(
     if verbose:
         print("[1/4] Coefficient-based metrics ...")
     mse = mse_coefficients(reconstruction_pred, reconstruction_gt, mask)
+    mae = mae_coefficients(reconstruction_pred, reconstruction_gt, mask)
     normalized_mse = normalized_mse_coefficients(
         reconstruction_pred, reconstruction_gt, mask, ell_max
     )
     if verbose:
-        print(f"      MSE={mse:.4e}  norm-MSE={normalized_mse:.4e}")
+        print(f"      MSE={mse:.4e}  MAE={mae:.4e}  norm-MSE={normalized_mse:.4e}")
 
     # Projection-based metrics
     proj_metrics = None
     if compute_projection_metrics:
         if geometry is None:
             raise ValueError("geometry is required for projection-based metrics")
-        n_proj = len(geometry.inner_angles)
-        if verbose:
-            print(f"[2/4] Projection-based metrics  ({n_proj} projections) ...")
+
+        # Optionally replace the evaluation geometry with an unbiased Fibonacci grid
+        if n_fibonacci_eval_projections > 0:
+            from .geometry import fibonacci_hemisphere, create_geometry_from_directions
+            fib_dirs = fibonacci_hemisphere(n_fibonacci_eval_projections, upper=True)
+            eval_geometry = create_geometry_from_directions(
+                directions=fib_dirs,
+                reference_geometry=geometry,
+                copy_from_reference=False,
+            )
+            eval_weights = None  # all pixels equally valid on synthetic grid
+            if verbose:
+                print(f"[2/4] Projection-based metrics  "
+                      f"(Fibonacci eval grid: {n_fibonacci_eval_projections} directions) ...")
+        else:
+            eval_geometry = geometry
+            eval_weights = weights
+            if verbose:
+                n_proj = len(geometry.inner_angles)
+                print(f"[2/4] Projection-based metrics  ({n_proj} projections) ...")
+
         proj_metrics = projection_metrics(
-            reconstruction_pred, reconstruction_gt, geometry, ell_max, mask,
-            weights=weights,
+            reconstruction_pred, reconstruction_gt, eval_geometry, ell_max, mask,
+            weights=eval_weights,
             percentile_low=percentile_low, percentile_high=percentile_high,
             verbose=verbose,
         )
@@ -801,6 +883,7 @@ def compare_reconstructions(
 
     return ReconstructionComparisonResult(
         mse_coefficients=mse,
+        mae_coefficients=mae,
         normalized_mse_coefficients=normalized_mse,
         projection_metrics=proj_metrics,
         orientation_metrics=orient_metrics,
@@ -823,15 +906,18 @@ def print_comparison_results(result: ReconstructionComparisonResult) -> None:
     
     print("\n--- Coefficient-based Metrics ---")
     print(f"  MSE (raw):        {result.mse_coefficients:.6e}")
+    print(f"  MAE (raw):        {result.mae_coefficients:.6e}")
     print(f"  MSE (normalized): {result.normalized_mse_coefficients:.6e}")
-    
+
     if result.projection_metrics is not None:
         pm = result.projection_metrics
         print(f"\n--- Projection-based Metrics ({pm.n_channels} channels) ---")
         print(f"  Global MSE:  {pm.mse_global:.6e}")
+        print(f"  Global MAE:  {pm.mae_global:.6e}")
         print(f"  Global PSNR: {pm.psnr_global:.2f} dB")
         print(f"  Global SSIM: {pm.ssim_global:.4f}")
-        print(f"\n  Per-channel PSNR: {np.array2string(pm.psnr_per_channel, precision=2)} dB")
+        print(f"\n  Per-channel MAE:  {np.array2string(pm.mae_per_channel, precision=4)}")
+        print(f"  Per-channel PSNR: {np.array2string(pm.psnr_per_channel, precision=2)} dB")
         print(f"  Per-channel SSIM: {np.array2string(pm.ssim_per_channel, precision=4)}")
     
     if result.orientation_metrics is not None:
@@ -848,6 +934,7 @@ def print_comparison_results(result: ReconstructionComparisonResult) -> None:
         print(f"\n--- Real-Space SH Function Metrics ---")
         print(f"  Grid resolution:  {rs.resolution_in_degrees}°  ({rs.n_directions} directions)")
         print(f"  MSE:              {rs.mse:.6e}")
+        print(f"  MAE:              {rs.mae:.6e}")
         print(f"  PSNR:             {rs.psnr:.2f} dB")
         print(f"  SSIM:             {rs.ssim:.4f}")
 

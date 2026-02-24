@@ -37,19 +37,31 @@ from .visualization import (
     plot_projection_directions_comparison,
 )
 
-from .synthetic_data_processing import (
-    generate_synthetic_reconstruction_dataset,
-    SAMPLING_STRATEGIES,
-)
+try:
+    from .synthetic_data_processing import (
+        generate_synthetic_reconstruction_dataset,
+        SAMPLING_STRATEGIES,
+    )
+except Exception as _e:
+    import warnings
+    warnings.warn(f"mumott_al.synthetic_data_processing could not be imported: {_e}")
 
-from .benchmark_sparse_sampling import (
-    run_benchmark,
-    BENCHMARKS,
-)
+try:
+    from .benchmark_sparse_sampling import (
+        run_benchmark,
+        BENCHMARKS,
+    )
+except Exception as _e:
+    import warnings
+    warnings.warn(f"mumott_al.benchmark_sparse_sampling could not be imported: {_e}")
 
-from .active_learning_fibonacci import (
-    run_active_learning_fibonacci,
-)
+try:
+    from .active_learning_fibonacci import (
+        run_active_learning_fibonacci,
+    )
+except Exception as _e:
+    import warnings
+    warnings.warn(f"mumott_al.active_learning_fibonacci could not be imported: {_e}")
 
 __version__ = "0.1.0"
 __all__ = [

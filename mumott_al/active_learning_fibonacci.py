@@ -576,6 +576,7 @@ def _log_iteration_to_wandb(
         "iteration": iteration,
         "n_active_projections": n_active,
         "mse_coefficients": metrics.mse_coefficients,
+        "mae_coefficients": metrics.mae_coefficients,
         "normalized_mse_coefficients": metrics.normalized_mse_coefficients,
         # Mean variance of newly selected directions
         "mean_selected_variance": float(variance_scores[selected_indices].mean())
@@ -588,6 +589,7 @@ def _log_iteration_to_wandb(
         log_dict.update(
             {
                 "proj/mse_global": pm.mse_global,
+                "proj/mae_global": pm.mae_global,
                 "proj/psnr_global": pm.psnr_global,
                 "proj/ssim_global": pm.ssim_global,
             }
@@ -607,6 +609,7 @@ def _log_iteration_to_wandb(
         log_dict.update(
             {
                 "real_space/mse": rs.mse,
+                "real_space/mae": rs.mae,
                 "real_space/psnr": rs.psnr,
                 "real_space/ssim": rs.ssim,
             }
@@ -898,15 +901,16 @@ def run_active_learning_fibonacci(
         metrics = compare_reconstructions(
             reconstruction_pred=mean_reconstruction,
             reconstruction_gt=gt_reconstruction,
-            geometry=current_dc.geometry,
+            geometry=reference_dc.geometry,  # used only as reference for Fibonacci eval grid
             ell_max=ell_max,
             mask=None,
-            weights=current_dc.projections.weights,
+            weights=None,  # no bad pixels on Fibonacci eval grid
             compute_projection_metrics=True,
             compute_orientation_metrics=True,
             compute_real_space_metrics=True,
             real_space_resolution_in_degrees=real_space_resolution_deg,
             real_space_half_sphere=True,
+            n_fibonacci_eval_projections=1000,  # unbiased held-out eval geometry
             verbose=False,
         )
 
@@ -979,14 +983,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--num-iterations",
         type=int,
-        default=10,
+        default=20,
         metavar="T",
         help="Number of active learning iterations.",
     )
     parser.add_argument(
         "--num-experiments",
         type=int,
-        default=5,
+        default=6,
         metavar="M",
         help="Number of reconstructions per iteration (ensemble size).",
     )
