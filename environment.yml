@@ -1,4 +1,4 @@
-name: /das/work/p20/p20126/Torne/python_env/fiber_fit_env
+name: fiber_fit_env
 channels:
   - conda-forge
   - astra-toolbox
@@ -304,4 +304,3 @@ dependencies:
       - xcffib==1.5.0
       - xlrd==2.0.1
       - lovely_tensors
-prefix: /das/work/p20/p20126/Torne/python_env/fiber_fit_env
