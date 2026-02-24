@@ -25,12 +25,30 @@ from .metrics import (
     orientation_similarity,
     real_space_metrics,
     compare_reconstructions,
+    print_comparison_results,
     RealSpaceMetricsResult,
 )
 
 from .visualization import (
     plot_projection_residuals,
     plot_projection_residuals_comparison,
+    beam_directions_from_geometry,
+    plot_projection_directions,
+    plot_projection_directions_comparison,
+)
+
+from .synthetic_data_processing import (
+    generate_synthetic_reconstruction_dataset,
+    SAMPLING_STRATEGIES,
+)
+
+from .benchmark_sparse_sampling import (
+    run_benchmark,
+    BENCHMARKS,
+)
+
+from .active_learning_fibonacci import (
+    run_active_learning_fibonacci,
 )
 
 __version__ = "0.1.0"
@@ -50,7 +68,19 @@ __all__ = [
     "projection_metrics",
     "orientation_similarity",
     "compare_reconstructions",
+    "print_comparison_results",
     # Visualization functions
     "plot_projection_residuals",
     "plot_projection_residuals_comparison",
+    "beam_directions_from_geometry",
+    "plot_projection_directions",
+    "plot_projection_directions_comparison",
+    # Synthetic dataset generation
+    "generate_synthetic_reconstruction_dataset",
+    "SAMPLING_STRATEGIES",
+    # Sparse sampling benchmarks
+    "run_benchmark",
+    "BENCHMARKS",
+    # Active learning (Fibonacci search space)
+    "run_active_learning_fibonacci",
 ]

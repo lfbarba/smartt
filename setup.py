@@ -54,6 +54,7 @@ setup(
     entry_points={
         "console_scripts": [
             "smartt-generate=smartt.data_processing:main",
+            "mumott-al-synthetic-dataset=mumott_al.synthetic_data_processing:main",
         ],
     },
 )

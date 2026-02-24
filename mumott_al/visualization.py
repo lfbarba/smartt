@@ -364,3 +364,220 @@ def plot_projection_residuals_comparison(
     fig.tight_layout()
 
     return fig, axes, all_stats
+
+
+# ─────────────────────────────────────────────────────────────────────────── #
+# 3-D projection-direction plots                                              #
+# ─────────────────────────────────────────────────────────────────────────── #
+
+def beam_directions_from_geometry(geometry) -> np.ndarray:
+    """Return the beam direction for each projection in the lab frame.
+
+    Each direction is computed as ``R_i @ p_direction_0``, where ``R_i`` is
+    the rotation matrix of the *i*-th projection.
+
+    Parameters
+    ----------
+    geometry : mumott.Geometry
+        A mumott Geometry object (e.g. ``dc.geometry``).
+
+    Returns
+    -------
+    np.ndarray, shape (n_projections, 3)
+        Unit vectors pointing along the beam for each projection.
+    """
+    p0 = np.array(geometry.p_direction_0)
+    rots = np.array(geometry.rotations)  # (n, 3, 3)
+    return rots @ p0                      # (n, 3)
+
+
+def _draw_lab_axes(ax, geometry, scale: float = 1.3, labels: bool = True) -> None:
+    """Draw the three lab-frame basis vectors as coloured quiver arrows on *ax*."""
+    origin = np.zeros(3)
+    for vec, color, lbl in [
+        (np.array(geometry.p_direction_0), "navy",      "beam (p₀)"),
+        (np.array(geometry.j_direction_0), "darkred",   "j₀"),
+        (np.array(geometry.k_direction_0), "darkgreen", "k₀"),
+    ]:
+        v = vec * scale
+        ax.quiver(*origin, *v, color=color, linewidth=2, arrow_length_ratio=0.15)
+        if labels:
+            ax.text(*(v * 1.08), lbl, color=color, fontsize=8, ha="center")
+
+
+def _geometry_to_xyz(geometry):
+    """Convert a geometry's inner/outer angles to Cartesian (x, y, z) unit vectors."""
+    inner = np.array(geometry.inner_angles)
+    tilt  = np.pi / 2 - np.array(geometry.outer_angles)
+    x = np.sin(tilt) * np.cos(inner)
+    y = np.sin(tilt) * np.sin(inner)
+    z = np.cos(tilt)
+    return x, y, z
+
+
+def _unit_sphere(n: int = 100):
+    """Return (X, Y, Z) mesh arrays for a unit sphere."""
+    u = np.linspace(0, 2 * np.pi, n)
+    v = np.linspace(0, np.pi, n)
+    X = np.outer(np.cos(u), np.sin(v))
+    Y = np.outer(np.sin(u), np.sin(v))
+    Z = np.outer(np.ones(n), np.cos(v))
+    return X, Y, Z
+
+
+def plot_projection_directions(
+    geometry,
+    figsize: Tuple[float, float] = (7, 6),
+    elev: float = 10,
+    azim: float = 70,
+    title: Optional[str] = None,
+    axis_scale: float = 1.3,
+) -> Tuple[plt.Figure, plt.Axes]:
+    """Plot the projection directions of a geometry on a unit sphere.
+
+    Directions are derived from the geometry's inner/outer angles (the same
+    parameterisation the instrument uses) and shown as red dots.  The three
+    lab-frame axes (beam p₀, detector j₀, detector k₀) are overlaid as
+    coloured arrows so the orientation of the instrument frame is visible.
+
+    Parameters
+    ----------
+    geometry : mumott.Geometry
+        The geometry whose projection directions should be visualised.
+    figsize : tuple of float
+        Figure size ``(width, height)`` in inches (default: ``(7, 6)``).
+    elev : float
+        Elevation angle of the 3-D view in degrees (default: 10).
+    azim : float
+        Azimuth angle of the 3-D view in degrees (default: 70).
+    title : str, optional
+        Figure title.  Auto-generated from projection count when *None*.
+    axis_scale : float
+        Length of the lab-frame axis arrows relative to the unit sphere
+        (default: 1.3).
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    ax  : mpl_toolkits.mplot3d.Axes3D
+    """
+    x, y, z = _geometry_to_xyz(geometry)
+    n_proj = len(x)
+
+    fig = plt.figure(figsize=figsize)
+    ax = fig.add_subplot(111, projection="3d")
+
+    X, Y, Z = _unit_sphere()
+    ax.plot_surface(X, Y, Z, color="b", alpha=0.07)
+    ax.scatter(x, y, z, color="r", s=10, label=f"{n_proj} projections")
+    _draw_lab_axes(ax, geometry, scale=axis_scale)
+
+    ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
+    if title is None:
+        title = (
+            f"Projection directions ({n_proj} proj)\n"
+            "navy=beam p₀  |  darkred=j₀  |  darkgreen=k₀"
+        )
+    ax.set_title(title)
+    ax.legend(fontsize=8)
+    ax.view_init(elev=elev, azim=azim)
+    fig.tight_layout()
+    return fig, ax
+
+
+def plot_projection_directions_comparison(
+    reference_geometry,
+    new_directions,
+    figsize: Tuple[float, float] = (14, 6),
+    elev: float = 20,
+    azim: float = 45,
+    axis_scale: float = 1.3,
+    new_label: Optional[str] = None,
+) -> Tuple[plt.Figure, tuple]:
+    """Two-panel 3-D comparison of new directions against an existing geometry.
+
+    * **Left panel** — *new_directions* alone, with lab-frame axes.
+    * **Right panel** — *new_directions* (green) overlaid on the original
+      directions (red) derived from *reference_geometry*, with lab-frame axes.
+
+    Parameters
+    ----------
+    reference_geometry : mumott.Geometry
+        Geometry of the existing experiment (provides the original projection
+        directions and the lab-frame axis orientations).
+    new_directions : np.ndarray of shape (n, 3) or mumott.Geometry
+        Either Cartesian (x, y, z) unit vectors for the new projection
+        directions, or a mumott Geometry object whose inner/outer angles are
+        used to derive those directions.
+    figsize : tuple of float
+        Figure size (default: ``(14, 6)``).
+    elev : float
+        Elevation angle for both 3-D views in degrees (default: 20).
+    azim : float
+        Azimuth angle for both 3-D views in degrees (default: 45).
+    axis_scale : float
+        Arrow scale relative to unit sphere (default: 1.3).
+    new_label : str, optional
+        Legend label for the new directions.  Defaults to ``"New (N pts)"``.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    axes : tuple of two mpl_toolkits.mplot3d.Axes3D
+        ``(ax_new, ax_comparison)``
+    """
+    # Accept either a bare xyz array or a Geometry object
+    if hasattr(new_directions, "inner_angles"):
+        xn, yn, zn = _geometry_to_xyz(new_directions)
+        new_dirs_xyz = np.column_stack([xn, yn, zn])
+    else:
+        new_dirs_xyz = np.asarray(new_directions)
+
+    n_new = len(new_dirs_xyz)
+    if new_label is None:
+        new_label = f"New ({n_new} pts)"
+
+    x_orig, y_orig, z_orig = _geometry_to_xyz(reference_geometry)
+    n_orig = len(x_orig)
+
+    X, Y, Z = _unit_sphere()
+    fig = plt.figure(figsize=figsize)
+
+    # ── Left: new directions only ──────────────────────────────────────────
+    ax1 = fig.add_subplot(121, projection="3d")
+    ax1.plot_surface(X, Y, Z, color="b", alpha=0.07)
+    ax1.scatter(
+        new_dirs_xyz[:, 0], new_dirs_xyz[:, 1], new_dirs_xyz[:, 2],
+        color="g", s=50, label=new_label,
+    )
+    _draw_lab_axes(ax1, reference_geometry, scale=axis_scale)
+    ax1.set_xlabel("X"); ax1.set_ylabel("Y"); ax1.set_zlabel("Z")
+    ax1.set_title(
+        "New Projection Directions\n"
+        "navy=beam p₀  |  darkred=j₀  |  darkgreen=k₀"
+    )
+    ax1.legend(fontsize=8)
+    ax1.view_init(elev=elev, azim=azim)
+
+    # ── Right: original vs new ─────────────────────────────────────────────
+    ax2 = fig.add_subplot(122, projection="3d")
+    ax2.plot_surface(X, Y, Z, color="b", alpha=0.07)
+    ax2.scatter(
+        x_orig, y_orig, z_orig,
+        color="r", s=10, alpha=0.5, label=f"Original ({n_orig} pts)",
+    )
+    ax2.scatter(
+        new_dirs_xyz[:, 0], new_dirs_xyz[:, 1], new_dirs_xyz[:, 2],
+        color="g", s=50, label=new_label,
+    )
+    _draw_lab_axes(ax2, reference_geometry, scale=axis_scale)
+    ax2.set_xlabel("X"); ax2.set_ylabel("Y"); ax2.set_zlabel("Z")
+    ax2.set_title(
+        "Comparison: Original vs New\n"
+        "The missing cone sits around the beam axis (navy arrow)"
+    )
+    ax2.legend(fontsize=8)
+    ax2.view_init(elev=elev, azim=azim)
+
+    fig.tight_layout()
+    return fig, (ax1, ax2)

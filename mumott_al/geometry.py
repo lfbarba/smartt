@@ -146,6 +146,9 @@ def create_geometry_from_directions(
     detector_angles: np.ndarray = None,
     inner_axis: np.ndarray = np.array([0., 0., 1.]),
     outer_axis: np.ndarray = np.array([1., 0., 0.]),
+    j_offsets: Optional[np.ndarray] = None,
+    k_offsets: Optional[np.ndarray] = None,
+    copy_from_reference: bool = False,
 ) -> Geometry:
     """
     Create a new Geometry object from a set of projection directions.
@@ -165,9 +168,20 @@ def create_geometry_from_directions(
     detector_angles : np.ndarray, optional
         Azimuthal angles of detector segments. If None, uses reference_geometry or default.
     inner_axis : np.ndarray
-        Inner rotation axis (default: z-axis [0, 0, 1]).
+        Inner rotation axis (default: z-axis [0, 0, 1]). Only used when copy_from_reference=False and
+        reference_geometry does not provide per-projection axes.
     outer_axis : np.ndarray
-        Outer rotation axis (default: x-axis [1, 0, 0]).
+        Outer rotation axis (default: x-axis [1, 0, 0]). Only used when copy_from_reference=False and
+        reference_geometry does not provide per-projection axes.
+    j_offsets : np.ndarray, optional
+        Per-projection detector j-offsets of shape (n,). Defaults to zeros.
+    k_offsets : np.ndarray, optional
+        Per-projection detector k-offsets of shape (n,). Defaults to zeros.
+    copy_from_reference : bool
+        If True and reference_geometry is provided with the same number of projections as directions,
+        copy the rotation matrices, j_offsets, k_offsets, inner_axes, and outer_axes for each
+        projection directly from the reference. Use this when reproducing the exact same geometry
+        (e.g., for full-data synthetic projections). Defaults to False.
         
     Returns
     -------
@@ -178,11 +192,21 @@ def create_geometry_from_directions(
     if directions.shape[1] == 3:
         inner_angles, outer_angles = cartesian_to_spherical(directions)
     else:
-        inner_angles = directions[:, 0]
-        outer_angles = directions[:, 1]
+        inner_angles = np.asarray(directions[:, 0])
+        outer_angles = np.asarray(directions[:, 1])
     
     n_projections = len(inner_angles)
     
+    # Validate copy_from_reference
+    if copy_from_reference:
+        if reference_geometry is None:
+            raise ValueError("copy_from_reference=True requires reference_geometry to be provided.")
+        if len(reference_geometry.inner_angles) != n_projections:
+            raise ValueError(
+                f"copy_from_reference=True requires reference_geometry to have the same number of "
+                f"projections as directions ({n_projections}), but got {len(reference_geometry.inner_angles)}."
+            )
+
     # Create new geometry
     geometry = Geometry()
     
@@ -207,21 +231,43 @@ def create_geometry_from_directions(
         if detector_angles is not None:
             geometry._detector_angles = detector_angles
     
+    # Resolve per-projection offset arrays
+    _j_offsets = np.zeros(n_projections) if j_offsets is None else np.asarray(j_offsets, dtype=float)
+    _k_offsets = np.zeros(n_projections) if k_offsets is None else np.asarray(k_offsets, dtype=float)
+
     # Add projections with the new geometry
     for i in range(n_projections):
-        rotation = create_rotation_matrix(
-            inner_angles[i], outer_angles[i],
-            inner_axis, outer_axis
-        )
+        if copy_from_reference:
+            # Copy rotation and axes directly from the reference — preserves the exact physical
+            # setup including stage-axis conventions and any per-projection offset calibration.
+            rotation    = np.array(reference_geometry.rotations[i])
+            j_off       = reference_geometry.j_offsets[i]
+            k_off       = reference_geometry.k_offsets[i]
+            proj_inner_axis = np.array(reference_geometry.inner_axes[i])
+            proj_outer_axis = np.array(reference_geometry.outer_axes[i])
+        else:
+            # Use provided or default axes and compute rotation from angles
+            proj_inner_axis = np.array(reference_geometry.inner_axes[i]) \
+                if (reference_geometry is not None and hasattr(reference_geometry, 'inner_axes')) \
+                else inner_axis
+            proj_outer_axis = np.array(reference_geometry.outer_axes[i]) \
+                if (reference_geometry is not None and hasattr(reference_geometry, 'outer_axes')) \
+                else outer_axis
+            rotation = create_rotation_matrix(
+                inner_angles[i], outer_angles[i],
+                proj_inner_axis, proj_outer_axis
+            )
+            j_off = _j_offsets[i]
+            k_off = _k_offsets[i]
         
         geom_tuple = GeometryTuple(
             rotation=rotation,
-            j_offset=0.0,
-            k_offset=0.0,
+            j_offset=j_off,
+            k_offset=k_off,
             inner_angle=inner_angles[i],
             outer_angle=outer_angles[i],
-            inner_axis=inner_axis,
-            outer_axis=outer_axis
+            inner_axis=proj_inner_axis,
+            outer_axis=proj_outer_axis
         )
         geometry.append(geom_tuple)
     
@@ -313,6 +359,9 @@ def generate_geometry_and_projections(
     reference_geometry: Geometry,
     ell_max: int = 8,
     return_data_container: bool = False,
+    copy_from_reference: bool = False,
+    j_offsets: Optional[np.ndarray] = None,
+    k_offsets: Optional[np.ndarray] = None,
 ) -> Tuple[Geometry, Union[np.ndarray, ProjectionStack]]:
     """
     Convenience function to create new geometry and synthetic projections in one call.
@@ -331,6 +380,14 @@ def generate_geometry_and_projections(
         Maximum order of spherical harmonics (default: 8).
     return_data_container : bool
         If True, returns a ProjectionStack instead of just the projections array.
+    copy_from_reference : bool
+        If True, rotation matrices, j/k-offsets, and per-projection axes are copied directly
+        from reference_geometry (requires same number of projections as directions).
+        Use this when reproducing the exact same geometry for forward-projection comparisons.
+    j_offsets : np.ndarray, optional
+        Per-projection detector j-offsets of shape (n,). Ignored when copy_from_reference=True.
+    k_offsets : np.ndarray, optional
+        Per-projection detector k-offsets of shape (n,). Ignored when copy_from_reference=True.
         
     Returns
     -------
@@ -342,7 +399,10 @@ def generate_geometry_and_projections(
     # Create new geometry
     new_geometry = create_geometry_from_directions(
         directions=directions,
-        reference_geometry=reference_geometry
+        reference_geometry=reference_geometry,
+        copy_from_reference=copy_from_reference,
+        j_offsets=j_offsets,
+        k_offsets=k_offsets,
     )
     
     # Create synthetic projections

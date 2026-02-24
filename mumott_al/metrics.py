@@ -10,6 +10,8 @@ This module provides various metrics to compare reconstructions:
 import numpy as np
 from typing import Dict, Optional, Tuple, Union
 from dataclasses import dataclass
+from tqdm.auto import tqdm
+from scipy.ndimage import uniform_filter as _scipy_uniform_filter
 
 from mumott import Geometry, ProbedCoordinates
 from mumott.methods.projectors import SAXSProjector
@@ -160,49 +162,31 @@ def _compute_ssim_2d(
 ) -> float:
     """
     Compute Structural Similarity Index (SSIM) for 2D images.
-    
-    Simplified implementation without scipy.ndimage dependency.
+
+    Uses scipy.ndimage.uniform_filter for fast C-level convolution.
     """
     if data_range is None:
         data_range = max(img1.max() - img1.min(), img2.max() - img2.min())
         if data_range == 0:
             data_range = 1.0
-    
+
     C1 = (0.01 * data_range) ** 2
     C2 = (0.03 * data_range) ** 2
-    
-    # Simple uniform filter using convolution
-    kernel_size = win_size
-    kernel = np.ones((kernel_size, kernel_size)) / (kernel_size ** 2)
-    
-    def uniform_filter(img):
-        # Pad and convolve
-        pad = kernel_size // 2
-        padded = np.pad(img, pad, mode='reflect')
-        result = np.zeros_like(img)
-        for i in range(img.shape[0]):
-            for j in range(img.shape[1]):
-                result[i, j] = np.sum(padded[i:i+kernel_size, j:j+kernel_size] * kernel)
-        return result
-    
-    mu1 = uniform_filter(img1)
-    mu2 = uniform_filter(img2)
-    
-    mu1_sq = mu1 ** 2
-    mu2_sq = mu2 ** 2
-    mu1_mu2 = mu1 * mu2
-    
-    sigma1_sq = uniform_filter(img1 ** 2) - mu1_sq
-    sigma2_sq = uniform_filter(img2 ** 2) - mu2_sq
-    sigma12 = uniform_filter(img1 * img2) - mu1_mu2
-    
-    # Clip negative variances (numerical issues)
-    sigma1_sq = np.maximum(sigma1_sq, 0)
-    sigma2_sq = np.maximum(sigma2_sq, 0)
-    
+
+    p = img1.astype(np.float64)
+    g = img2.astype(np.float64)
+
+    mu1 = _scipy_uniform_filter(p, size=win_size, mode='reflect')
+    mu2 = _scipy_uniform_filter(g, size=win_size, mode='reflect')
+    mu1_sq, mu2_sq, mu1_mu2 = mu1 ** 2, mu2 ** 2, mu1 * mu2
+
+    sigma1_sq = np.maximum(_scipy_uniform_filter(p ** 2, size=win_size, mode='reflect') - mu1_sq, 0)
+    sigma2_sq = np.maximum(_scipy_uniform_filter(g ** 2, size=win_size, mode='reflect') - mu2_sq, 0)
+    sigma12   = _scipy_uniform_filter(p * g,    size=win_size, mode='reflect') - mu1_mu2
+
     ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / \
                ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
-    
+
     return float(np.mean(ssim_map))
 
 
@@ -282,6 +266,7 @@ def real_space_metrics(
     map_half_sphere: bool = True,
     percentile_low: float = 5.0,
     percentile_high: float = 95.0,
+    verbose: bool = False,
 ) -> RealSpaceMetricsResult:
     """
     Compute PSNR and SSIM of the real-valued SH functions, not the coefficients.
@@ -333,11 +318,16 @@ def real_space_metrics(
     nx, ny, nz, n_coeffs = pred.shape
 
     # Build SH evaluation matrix once
+    if verbose:
+        print(f"  [real_space] Building SH evaluation matrix ({resolution_in_degrees}° grid) ...")
     basis_set = SphericalHarmonics(ell_max=ell_max)
     Y, _, _ = _build_sh_evaluation_matrix(
         basis_set, resolution_in_degrees=resolution_in_degrees, map_half_sphere=map_half_sphere
     )
     n_directions = Y.shape[0]  # n_theta * n_phi
+    if verbose:
+        print(f"  [real_space] Evaluating SH functions on {n_directions} directions "
+              f"for {nx*ny*nz} voxels ...")
 
     # Batch-evaluate all voxels: (n_voxels, n_coeffs) @ (n_coeffs, n_directions)
     pred_flat = pred.astype(np.float64).reshape(-1, n_coeffs)   # (n_voxels, n_coeffs)
@@ -356,13 +346,32 @@ def real_space_metrics(
     real_pred_vol = real_pred.reshape(nx, ny, nz, n_directions)
     real_gt_vol = real_gt.reshape(nx, ny, nz, n_directions)
 
-    ssim_values = []
-    for z_idx in range(nz):
-        for d_idx in range(n_directions):
-            pred_slice = real_pred_vol[:, :, z_idx, d_idx]
-            gt_slice = real_gt_vol[:, :, z_idx, d_idx]
-            ssim_values.append(_compute_ssim_2d(pred_slice, gt_slice, data_range))
-    ssim_val = float(np.mean(ssim_values))
+    # SSIM: vectorized over all directions per z-slice.
+    # Each slab has shape (nx, ny, n_directions); scipy uniform_filter is called with
+    # size=(win_size, win_size, 1) so it filters only along the two spatial axes.
+    # This replaces nz × n_directions individual SSIM calls with just nz scipy calls.
+    WIN = 7
+    C1 = (0.01 * data_range) ** 2
+    C2 = (0.03 * data_range) ** 2
+    sz = (WIN, WIN, 1)  # filter spatial axes only; leave direction axis untouched
+
+    ssim_sum = 0.0
+    ssim_count = 0
+    z_iter = tqdm(range(nz), desc="  SSIM z-slices", leave=False) if verbose else range(nz)
+    for z_idx in z_iter:
+        p = real_pred_vol[:, :, z_idx, :]   # (nx, ny, n_directions)
+        g = real_gt_vol[:, :, z_idx, :]
+        mu1 = _scipy_uniform_filter(p, size=sz, mode='reflect')
+        mu2 = _scipy_uniform_filter(g, size=sz, mode='reflect')
+        mu1_sq, mu2_sq, mu1_mu2 = mu1 ** 2, mu2 ** 2, mu1 * mu2
+        s1_sq = np.maximum(_scipy_uniform_filter(p ** 2, size=sz, mode='reflect') - mu1_sq, 0)
+        s2_sq = np.maximum(_scipy_uniform_filter(g ** 2, size=sz, mode='reflect') - mu2_sq, 0)
+        s12   = _scipy_uniform_filter(p * g,    size=sz, mode='reflect') - mu1_mu2
+        ssim_slab = ((2 * mu1_mu2 + C1) * (2 * s12 + C2)) / \
+                    ((mu1_sq + mu2_sq + C1) * (s1_sq + s2_sq + C2))
+        ssim_sum   += float(np.sum(ssim_slab))
+        ssim_count += ssim_slab.size
+    ssim_val = ssim_sum / ssim_count
 
     return RealSpaceMetricsResult(
         psnr=psnr_val,
@@ -382,6 +391,7 @@ def projection_metrics(
     weights: Optional[np.ndarray] = None,
     percentile_low: float = 5.0,
     percentile_high: float = 95.0,
+    verbose: bool = False,
 ) -> ProjectionMetricsResult:
     """
     Compute projection-based metrics between predicted and ground truth reconstructions.
@@ -437,7 +447,12 @@ def projection_metrics(
     basis_set = SphericalHarmonics(ell_max=ell_max, probed_coordinates=geometry.probed_coordinates)
 
     # Forward project both reconstructions
+    n_proj = len(geometry.inner_angles)
+    if verbose:
+        print(f"  [projection] Forward projecting pred ({n_proj} projections) ...")
     proj_pred = basis_set.forward(projector.forward(pred_masked.astype(np.float64)))
+    if verbose:
+        print(f"  [projection] Forward projecting gt  ({n_proj} projections) ...")
     proj_gt = basis_set.forward(projector.forward(gt_masked.astype(np.float64)))
 
     n_channels = proj_pred.shape[-1]  # (n_proj, det_x, det_y, n_channels)
@@ -447,6 +462,12 @@ def projection_metrics(
     # dc.projections.weights has shape (n_proj, det_x, det_y).
     if weights is not None:
         w = np.asarray(weights, dtype=np.float64)
+        if w.shape[0] != n_proj:
+            raise ValueError(
+                f"weights.shape[0]={w.shape[0]} does not match the number of projections "
+                f"in geometry ({n_proj}). Make sure you pass the weights from the same "
+                f"DataContainer whose geometry is used (e.g. new_dc.projections.weights)."
+            )
         if w.ndim == 3:  # (n_proj, det_x, det_y) → add channel dim
             w = w[:, :, :, np.newaxis]  # broadcast across channels
         # Normalise per-channel so weights sum to the number of valid pixels
@@ -462,7 +483,11 @@ def projection_metrics(
     psnr_per_channel = np.zeros(n_channels)
     ssim_per_channel = np.zeros(n_channels)
 
-    for c in range(n_channels):
+    if verbose:
+        print(f"  [projection] Computing per-channel metrics "
+              f"({n_channels} channels × {n_proj} projections) ...")
+    ch_iter = tqdm(range(n_channels), desc="  channels", leave=False) if verbose else range(n_channels)
+    for c in ch_iter:
         pred_c = proj_pred[..., c]   # (n_proj, det_x, det_y)
         gt_c   = proj_gt[...,  c]
         w_c    = w[..., 0] if w.shape[-1] == 1 else w[..., c]  # (n_proj, det_x, det_y)
@@ -485,18 +510,24 @@ def projection_metrics(
             else 10 * np.log10((channel_data_range ** 2) / mse_per_channel[c])
         )
 
-        # SSIM per projection slice
-        # Bad pixels are set to gt so they contribute zero local error.
-        ssim_values = []
-        for p in range(pred_c.shape[0]):
-            pred_slice = pred_c[p].copy()
-            gt_slice   = gt_c[p]
-            valid_slice = valid_c[p]
-            # Replace bad pixels with gt (zero error contribution)
-            pred_slice[~valid_slice] = gt_slice[~valid_slice]
-            ssim_val = _compute_ssim_2d(pred_slice, gt_slice, channel_data_range)
-            ssim_values.append(ssim_val)
-        ssim_per_channel[c] = float(np.mean(ssim_values))
+        # SSIM: vectorized over all projections at once.
+        # Replace bad pixels with gt so they contribute zero local error.
+        WIN = 7
+        C1 = (0.01 * channel_data_range) ** 2
+        C2 = (0.03 * channel_data_range) ** 2
+        sz = (1, WIN, WIN)  # filter along det_x, det_y only; leave proj axis untouched
+        p_vol = pred_c.copy()                       # (n_proj, det_x, det_y)
+        g_vol = gt_c
+        p_vol[~valid_c] = g_vol[~valid_c]           # mask bad pixels
+        mu1 = _scipy_uniform_filter(p_vol, size=sz, mode='reflect')
+        mu2 = _scipy_uniform_filter(g_vol, size=sz, mode='reflect')
+        mu1_sq, mu2_sq, mu1_mu2 = mu1 ** 2, mu2 ** 2, mu1 * mu2
+        s1_sq = np.maximum(_scipy_uniform_filter(p_vol ** 2, size=sz, mode='reflect') - mu1_sq, 0)
+        s2_sq = np.maximum(_scipy_uniform_filter(g_vol ** 2, size=sz, mode='reflect') - mu2_sq, 0)
+        s12   = _scipy_uniform_filter(p_vol * g_vol, size=sz, mode='reflect') - mu1_mu2
+        ssim_map = ((2 * mu1_mu2 + C1) * (2 * s12 + C2)) / \
+                   ((mu1_sq + mu2_sq + C1) * (s1_sq + s2_sq + C2))
+        ssim_per_channel[c] = float(np.mean(ssim_map))
 
     # Global metrics across all channels
     # Weighted global MSE
@@ -647,6 +678,7 @@ def compare_reconstructions(
     percentile_high: float = 95.0,
     real_space_resolution_in_degrees: int = 10,
     real_space_half_sphere: bool = True,
+    verbose: bool = False,
 ) -> ReconstructionComparisonResult:
     """
     Comprehensive comparison of two reconstructions using multiple metrics.
@@ -704,32 +736,55 @@ def compare_reconstructions(
     >>> print(f"Orientation similarity: {result.orientation_metrics.cosine_similarity_mean:.4f}")
     """
     # Coefficient-based metrics
+    if verbose:
+        print("[1/4] Coefficient-based metrics ...")
     mse = mse_coefficients(reconstruction_pred, reconstruction_gt, mask)
     normalized_mse = normalized_mse_coefficients(
         reconstruction_pred, reconstruction_gt, mask, ell_max
     )
-    
+    if verbose:
+        print(f"      MSE={mse:.4e}  norm-MSE={normalized_mse:.4e}")
+
     # Projection-based metrics
     proj_metrics = None
     if compute_projection_metrics:
         if geometry is None:
             raise ValueError("geometry is required for projection-based metrics")
+        n_proj = len(geometry.inner_angles)
+        if verbose:
+            print(f"[2/4] Projection-based metrics  ({n_proj} projections) ...")
         proj_metrics = projection_metrics(
             reconstruction_pred, reconstruction_gt, geometry, ell_max, mask,
             weights=weights,
             percentile_low=percentile_low, percentile_high=percentile_high,
+            verbose=verbose,
         )
+        if verbose:
+            print(f"      PSNR={proj_metrics.psnr_global:.2f} dB  "
+                  f"SSIM={proj_metrics.ssim_global:.4f}")
+    elif verbose:
+        print("[2/4] Projection-based metrics  (skipped)")
 
     # Orientation-based metrics
     orient_metrics = None
     if compute_orientation_metrics:
+        if verbose:
+            print("[3/4] Orientation-based metrics ...")
         orient_metrics = orientation_similarity(
             reconstruction_pred, reconstruction_gt, ell_max, mask
         )
+        if verbose:
+            print(f"      cosine_sim={orient_metrics.cosine_similarity_mean:.4f}  "
+                  f"angular_err={orient_metrics.angular_error_mean_degrees:.2f}°")
+    elif verbose:
+        print("[3/4] Orientation-based metrics  (skipped)")
 
     # Real-space metrics
     rs_metrics = None
     if compute_real_space_metrics:
+        if verbose:
+            print(f"[4/4] Real-space SH metrics  "
+                  f"(resolution={real_space_resolution_in_degrees}°) ...")
         rs_metrics = real_space_metrics(
             reconstruction_pred, reconstruction_gt,
             ell_max=ell_max, mask=mask,
@@ -737,7 +792,12 @@ def compare_reconstructions(
             map_half_sphere=real_space_half_sphere,
             percentile_low=percentile_low,
             percentile_high=percentile_high,
+            verbose=verbose,
         )
+        if verbose:
+            print(f"      PSNR={rs_metrics.psnr:.2f} dB  SSIM={rs_metrics.ssim:.4f}")
+    elif verbose:
+        print("[4/4] Real-space SH metrics  (skipped)")
 
     return ReconstructionComparisonResult(
         mse_coefficients=mse,
