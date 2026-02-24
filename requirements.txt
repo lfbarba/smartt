@@ -8,3 +8,7 @@ joblib
 coverage 
 pytest-cov
 scipy==1.15.2
+ipywidgets
+joblib
+coverage
+pytest-cov

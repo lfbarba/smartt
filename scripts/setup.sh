@@ -6,12 +6,7 @@ python -m pip install -e .
 
 cd /myhome/smartt/
 python -m pip install -e .
-python -m pip install joblib
-python -m pip install ipywidgets
-pip install --upgrade coverage pytest-cov
-
-
-python -m pip install e3nn
+# pip install --upgrade coverage pytest-cov
 
 eval "$(ssh-agent -s)"
 ssh-add /myhome/.ssh/id_rsa
