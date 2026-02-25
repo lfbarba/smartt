@@ -6,7 +6,7 @@ python -m pip install -e .
 
 cd /myhome/smartt/
 python -m pip install -e .
-# pip install --upgrade coverage pytest-cov
+pip install --upgrade coverage pytest-cov
 
 eval "$(ssh-agent -s)"
 ssh-add /myhome/.ssh/id_rsa

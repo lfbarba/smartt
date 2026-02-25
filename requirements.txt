@@ -1,0 +1,15 @@
+torch>=2.1
+e3nn>=0.5.1
+matplotlib>=3.7
+pytest>=7.0
+mumott
+ipykernel
+joblib
+coverage 
+pytest-cov
+scipy==1.15.2
+ipywidgets
+joblib
+coverage
+pytest-cov
+lovely_tensors

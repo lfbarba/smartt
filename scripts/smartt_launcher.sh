@@ -56,6 +56,8 @@ cd /myhome/smartt
 echo "Running setup script..."
 sh scripts/setup.sh
 
+cd /myhome/smartt
+
 echo "Setup complete. Running command..."
 echo "Command: $COMMAND"
 

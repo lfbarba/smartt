@@ -348,7 +348,7 @@ def _load_gt_reconstruction(
         if verbose:
             print(f"[GT] Loading cached reconstruction from {cache_path}")
         loaded = np.load(cache_path)
-        gt_reconstruction = loaded["gt_reconstruction"]
+        gt_reconstruction = loaded["gt_reconstruction"].astype(np.float32)
         if verbose:
             print(f"[GT] Loaded shape: {gt_reconstruction.shape}")
         return gt_reconstruction, dc
@@ -378,7 +378,7 @@ def _load_gt_reconstruction(
     if verbose:
         print(f"[GT] Cached to {cache_path}")
 
-    return gt_reconstruction, dc
+    return gt_reconstruction.astype(np.float32), dc
 
 
 # ---------------------------------------------------------------------------

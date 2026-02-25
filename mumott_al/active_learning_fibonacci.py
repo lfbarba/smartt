@@ -164,7 +164,7 @@ def _load_gt_reconstruction(
         print(f"[GT] Reconstruction done in {elapsed:.1f} s.  Saving cache to {cache_path}")
 
     np.savez_compressed(str(cache_path), gt_reconstruction=gt_reconstruction)
-    return gt_reconstruction, dc
+    return gt_reconstruction.astype(np.float32), dc
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +216,13 @@ def _build_search_space(
         print(f"[Search space] Generating {n_total} Fibonacci directions "
               f"({n_initial} initial + {n_search_extra} extra) …")
 
-    search_directions = fibonacci_hemisphere(n_total, upper=True)
+    # Generate the two halves independently so that the first n_initial entries
+    # are exactly fibonacci_hemisphere(n_initial) — the same directions that
+    # the FSUS benchmark uses at k = n_initial.  A single spiral of n_total
+    # points would give different initial directions.
+    initial_directions = fibonacci_hemisphere(n_initial, upper=True)
+    extra_directions = fibonacci_hemisphere(n_search_extra, upper=True)
+    search_directions = np.concatenate([initial_directions, extra_directions], axis=0)
 
     t0 = time.perf_counter()
     search_geometry, projection_stack = generate_geometry_and_projections(
@@ -798,6 +804,62 @@ def run_active_learning_fibonacci(
     except Exception as exc:
         if verbose:
             print(f"[wandb] Could not initialise run: {exc}")
+
+    # ------------------------------------------------------------------  [3.5]
+    # Baseline evaluation at iteration 0 (n_initial projections, before any
+    # active-learning selection has taken place).
+    # ------------------------------------------------------------------
+    if verbose:
+        print(f"\n[3.5] Baseline evaluation at n_initial={n_initial} projections …")
+
+    baseline_reconstruction = np.mean(
+        _compute_reconstruction_ensemble(
+            current_dc=current_dc,
+            search_dc=search_dc,
+            search_geometry=search_geometry,
+            active_indices=active_indices,
+            num_experiments=num_experiments,
+            subsample_fraction=1.0,  # full initial set — no subsampling for the baseline
+            ell_max=ell_max,
+            maxiter=maxiter,
+            regularization_weight=regularization_weight,
+            use_cuda=use_cuda,
+            rng=rng,
+            verbose=verbose,
+        ),
+        axis=0,
+    )
+
+    baseline_metrics = compare_reconstructions(
+        reconstruction_pred=baseline_reconstruction,
+        reconstruction_gt=gt_reconstruction,
+        geometry=reference_dc.geometry,
+        ell_max=ell_max,
+        mask=None,
+        weights=None,
+        compute_projection_metrics=True,
+        compute_orientation_metrics=True,
+        compute_real_space_metrics=True,
+        real_space_resolution_in_degrees=real_space_resolution_deg,
+        real_space_half_sphere=True,
+        n_fibonacci_eval_projections=1000,  # unbiased held-out eval geometry
+        verbose=False,
+    )
+
+    if verbose:
+        print_comparison_results(baseline_metrics)
+
+    if wandb_run is not None:
+        _log_iteration_to_wandb(
+            run=wandb_run,
+            iteration=0,
+            n_active=n_initial,
+            metrics=baseline_metrics,
+            selected_indices=np.array([], dtype=int),
+            variance_scores=np.zeros(n_total_search),
+        )
+
+    del baseline_reconstruction
 
     # ------------------------------------------------------------------  [4]
     # Active learning loop

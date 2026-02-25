@@ -239,15 +239,12 @@ def create_geometry_from_directions(
             proj_inner_axis = np.array(reference_geometry.inner_axes[i])
             proj_outer_axis = np.array(reference_geometry.outer_axes[i])
         else:
-            # Use provided or default axes and compute rotation from angles
-            proj_inner_axis = np.array(reference_geometry.inner_axes[i]) \
-                if (reference_geometry is not None and hasattr(reference_geometry, 'inner_axes')
-                    and i < len(reference_geometry.inner_axes)) \
-                else inner_axis
-            proj_outer_axis = np.array(reference_geometry.outer_axes[i]) \
-                if (reference_geometry is not None and hasattr(reference_geometry, 'outer_axes')
-                    and i < len(reference_geometry.outer_axes)) \
-                else outer_axis
+            # Use the provided (or default) axes for all new projections.
+            # The reference geometry is only used for global settings (shape, detector_angles, etc.),
+            # not for per-projection axes, which belong to the original projections and have no
+            # correspondence to the new Fibonacci directions.
+            proj_inner_axis = inner_axis
+            proj_outer_axis = outer_axis
             rotation = create_rotation_matrix(
                 inner_angles[i], outer_angles[i],
                 proj_inner_axis, proj_outer_axis
