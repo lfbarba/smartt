@@ -75,8 +75,11 @@ def cartesian_to_spherical(xyz: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     
     In mumott convention:
     - inner_angle (phi) is the rotation about the z-axis (azimuthal angle)
-    - outer_angle (theta) is the polar angle from the z-axis (tilt angle)
-    
+    - outer_angle is the **elevation** angle measured from the xy-plane (equator = 0,
+      pole = ±90°).  This matches the convention used by real DataContainers and
+      by ``_geometry_to_xyz`` in the visualization module, which reconstructs
+      Cartesian unit vectors via  z = sin(outer_angle).
+
     Parameters
     ----------
     xyz : np.ndarray
@@ -87,16 +90,21 @@ def cartesian_to_spherical(xyz: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     inner_angles : np.ndarray
         Azimuthal angles in radians.
     outer_angles : np.ndarray
-        Polar angles in radians (measured from z-axis).
+        Elevation angles in radians (measured from the xy-plane; 0 = equator,
+        ±π/2 = poles).
     """
     x, y, z = xyz[:, 0], xyz[:, 1], xyz[:, 2]
     
     # inner_angle (azimuthal angle, phi) - rotation in xy plane
     inner_angles = np.arctan2(y, x)
     
-    # outer_angle (polar angle from z-axis, theta)
+    # outer_angle (elevation angle from the xy-plane, i.e. tilt angle).
+    # This matches mumott's geometry convention where outer_angle = 0 at the
+    # equator and increases toward the poles — consistent with how
+    # _geometry_to_xyz reconstructs Cartesian coordinates via
+    #   tilt = pi/2 - outer_angle  →  z = cos(tilt) = sin(outer_angle).
     r = np.sqrt(x**2 + y**2 + z**2)
-    outer_angles = np.arccos(np.clip(z / r, -1, 1))
+    outer_angles = np.arcsin(np.clip(z / r, -1, 1))
     
     return inner_angles, outer_angles
 

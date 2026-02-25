@@ -581,3 +581,118 @@ def plot_projection_directions_comparison(
 
     fig.tight_layout()
     return fig, (ax1, ax2)
+
+
+def visualize_sh_function(
+    coefficients: np.ndarray,
+    title: str = "Spherical Harmonic Function",
+    figsize: tuple = (14, 5),
+    ell_max: int = 8,
+    resolution_pole: int = 2,
+    resolution_3d: int = 5,
+) -> plt.Figure:
+    """
+    Visualize a single set of spherical-harmonic (SH) coefficients as a pole figure
+    (2-D projection) and a 3-D scattering-pattern surface.
+
+    Parameters
+    ----------
+    coefficients : np.ndarray, shape (n_coefficients,)
+        Flat array of SH coefficients for one voxel (e.g. 45 for ell_max=8).
+    title : str
+        Overall figure title.
+    figsize : tuple
+        Matplotlib figure size ``(width, height)`` in inches.
+    ell_max : int
+        Maximum SH order used to build the basis (default: 8).
+    resolution_pole : int
+        Angular resolution in degrees for the pole figure (default: 2).
+    resolution_3d : int
+        Angular resolution in degrees for the 3-D surface (default: 5).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The figure containing both subplots.
+    """
+    try:
+        from mumott_plotting.map_plots import plot_on_polefigure, make_scattering_vector_plot
+        _has_mumott_plotting = True
+    except ImportError:
+        _has_mumott_plotting = False
+
+    basis_set = SphericalHarmonics(ell_max=ell_max)
+
+    fig = plt.figure(figsize=figsize)
+
+    # ── Left: pole figure (2-D) ───────────────────────────────────────────────
+    ax1 = fig.add_subplot(1, 2, 1, polar=True)
+    map_intensity, map_theta, map_phi = basis_set.generate_map(
+        coefficients,
+        map_half_sphere=True,
+        resolution_in_degrees=resolution_pole,
+    )
+    if _has_mumott_plotting:
+        plot_on_polefigure(ax1, map_intensity, map_theta, map_phi)
+    else:
+        # Fallback: simple polar colour map
+        ax1.pcolormesh(map_phi, np.degrees(map_theta), map_intensity, shading='auto', cmap='viridis')
+    ax1.set_title('Pole Figure (2-D)')
+
+    # ── Right: 3-D scattering surface ─────────────────────────────────────────
+    ax2 = fig.add_subplot(1, 2, 2, projection='3d')
+    map_intensity_3d, map_theta_3d, map_phi_3d = basis_set.generate_map(
+        coefficients,
+        map_half_sphere=False,
+        resolution_in_degrees=resolution_3d,
+    )
+    if _has_mumott_plotting:
+        make_scattering_vector_plot(ax2, map_intensity_3d, map_theta_3d, map_phi_3d)
+    else:
+        # Fallback: raw scatter on unit sphere
+        x = map_intensity_3d * np.sin(map_theta_3d) * np.cos(map_phi_3d)
+        y = map_intensity_3d * np.sin(map_theta_3d) * np.sin(map_phi_3d)
+        z = map_intensity_3d * np.cos(map_theta_3d)
+        ax2.scatter(x.ravel(), y.ravel(), z.ravel(), c=map_intensity_3d.ravel(), cmap='viridis', s=2)
+    ax2.set_title('3-D Scattering Pattern')
+
+    fig.suptitle(title, fontsize=13, fontweight='bold')
+    plt.tight_layout()
+    return fig
+
+
+def visualize_seed_voxels(
+    voxel_indices: list,
+    results_x: np.ndarray,
+    ell_max: int = 8,
+    figsize: tuple = (14, 5),
+) -> None:
+    """
+    Visualize the SH function for each seed voxel selected by ``voxel_indices``.
+
+    For every ``(i, j, k)`` in *voxel_indices* the corresponding coefficient
+    vector is extracted from *results_x* and rendered with
+    :func:`visualize_sh_function`.
+
+    Parameters
+    ----------
+    voxel_indices : list of (int, int, int)
+        Voxel coordinates ``(i, j, k)`` into *results_x*.
+    results_x : np.ndarray, shape (X, Y, Z, n_coefficients)
+        Reconstruction volume.
+    ell_max : int
+        Maximum SH order (default: 8).
+    figsize : tuple
+        Figure size passed to :func:`visualize_sh_function`.
+    """
+    n = len(voxel_indices)
+    print(f"Visualising {n} seed voxel(s) …")
+    for bin_idx, (i, j, k) in enumerate(voxel_indices):
+        coeffs = results_x[i, j, k, :]
+        title = (
+            f"Bin {bin_idx}  —  voxel ({i}, {j}, {k})\n"
+            f"SH norm = {np.linalg.norm(coeffs):.4f}, "
+            f"isotropic coeff = {coeffs[0]:.4f}"
+        )
+        fig = visualize_sh_function(coeffs, title=title, figsize=figsize, ell_max=ell_max)
+        plt.show()

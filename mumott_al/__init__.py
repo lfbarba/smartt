@@ -35,6 +35,8 @@ from .visualization import (
     beam_directions_from_geometry,
     plot_projection_directions,
     plot_projection_directions_comparison,
+    visualize_sh_function,
+    visualize_seed_voxels,
 )
 
 try:
