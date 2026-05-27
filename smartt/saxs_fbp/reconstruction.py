@@ -37,8 +37,9 @@ logger = logging.getLogger(__name__)
 # Sphere grid
 # ---------------------------------------------------------------------------
 
-def fibonacci_hemisphere(k: int, pole_gap_deg: float = 0.0) -> np.ndarray:
-    """k evenly distributed unit vectors on the upper hemisphere (z > 0).
+def fibonacci_hemisphere(k: int, pole_gap_deg: float = 0.0,
+                         half_space: str = 'z') -> np.ndarray:
+    """k evenly distributed unit vectors on a hemisphere.
 
     Uses the Fibonacci / golden-ratio spiral mapping to distribute points
     with roughly uniform solid-angle coverage.
@@ -48,29 +49,36 @@ def fibonacci_hemisphere(k: int, pole_gap_deg: float = 0.0) -> np.ndarray:
     k :
         Number of directions.
     pole_gap_deg :
-        Angular gap to keep around the z-axis (the beam axis / "north pole"),
-        in degrees.  Directions within ``pole_gap_deg`` of the z-axis are
-        excluded.  Default 0 = full hemisphere.
+        Angular gap to keep around the pole axis (the beam axis), in degrees.
+        Directions within ``pole_gap_deg`` of the pole are excluded.
+        Default 0 = full hemisphere.
 
         Pass ``alpha_max_deg`` (the goniometer outer-tilt limit) to exclude
         directions that have no accessible projections: for y_k within
         alpha_max of the beam axis there is no beam both ⊥ y_k and within
         the accessible polar cap, so the sub-CT has zero data.
+    half_space : str
+        ``'z'`` (default): sample z > 0 hemisphere (pole at [0, 0, 1]).
+        ``'y'``: rotate the grid so directions have y > 0 (pole at [0, 1, 0]),
+        matching the SICI/goniometer visualisation convention where the xz-plane
+        is the equatorial reference plane.
 
     Returns
     -------
     directions : (k, 3) float64 array
-        Unit vectors with z in (0, cos(pole_gap_deg)).
+        Unit vectors on the requested hemisphere.
     """
     golden = (1.0 + math.sqrt(5.0)) / 2.0
-    # z range: 0 (equator) up to cos(pole_gap_deg) (edge of excluded cap).
-    # For pole_gap_deg=0 this recovers the full hemisphere (z → 1 at top).
     z_max = math.cos(math.radians(pole_gap_deg))
     i = np.arange(k, dtype=np.float64)
     phi = 2.0 * math.pi * i / golden
     z = (i + 0.5) / k * z_max
     r = np.sqrt(np.maximum(0.0, 1.0 - z ** 2))
-    return np.stack([r * np.cos(phi), r * np.sin(phi), z], axis=-1)
+    dirs = np.stack([r * np.cos(phi), r * np.sin(phi), z], axis=-1)
+    if half_space == 'y':
+        # Rx(-90°): (x, y, z) → (x, z, -y)  — maps z-pole [0,0,1] → y-pole [0,1,0]
+        dirs = np.column_stack([dirs[:, 0], dirs[:, 2], -dirs[:, 1]])
+    return dirs
 
 
 # ---------------------------------------------------------------------------
@@ -450,7 +458,8 @@ def saxs_fbp_reconstruction(
     verbose: bool = False,
     projection_method: str = 'voronoi',
     ball_threshold: float = 0.3,
-    return_matrix:bool = False
+    return_matrix: bool = False,
+    half_space: str = 'z',
 ) -> tuple[torch.Tensor, np.ndarray]:
     """Reconstruct the q-sphere function of each voxel with independent FBPs.
 
@@ -488,6 +497,9 @@ def saxs_fbp_reconstruction(
         Ignored for ``'voronoi'``.
     return_matrix : bool
         Returns the geometry as well in a tuple
+    half_space : str
+        Which half-space to sample y-directions from: ``'z'`` (default,
+        z > 0) or ``'y'`` (y > 0, aligns with goniometer frame).
 
     Returns
     -------
@@ -507,7 +519,7 @@ def saxs_fbp_reconstruction(
     # accessible projections (no beam can be ⊥ y_k within the tilt cone).
     outer_angles = np.asarray(list(geometry.outer_angles))
     alpha_max_deg = math.degrees(float(np.max(np.abs(outer_angles))))
-    y_directions = fibonacci_hemisphere(k_fibonacci, pole_gap_deg=alpha_max_deg)
+    y_directions = fibonacci_hemisphere(k_fibonacci, pole_gap_deg=alpha_max_deg, half_space=half_space)
 
     # ------------------------------------------------------------------
     # 1. Build projection matrix on GPU (replaces CPU NearestNeighbor)
