@@ -155,12 +155,10 @@ def train(
     # ── Model ─────────────────────────────────────────────────────────────
     model = build_model(cross_attention_dim=conditioning_dim).to(device)
 
-    start_epoch = 0
     if resume is not None:
         ckpt = torch.load(resume, map_location=device)
         model.load_state_dict(ckpt['model'])
-        start_epoch = ckpt.get('epoch', 0)
-        logger.info("Resumed from %s (epoch %d)", resume, start_epoch)
+        logger.info("Fine-tuning from checkpoint %s", resume)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -202,16 +200,12 @@ def train(
         )
 
     model.train()
-    epoch_bar = tqdm(
-        range(start_epoch, start_epoch + epochs),
-        desc='Training',
-        unit='epoch',
-    )
+    epoch_bar = tqdm(range(epochs), desc='Training', unit='epoch')
     for epoch in epoch_bar:
         epoch_loss = 0.0
         n_batches = 0
 
-        batch_bar = tqdm(loader, desc=f'Epoch {epoch + 1}', unit='batch', leave=False)
+        batch_bar = tqdm(loader, desc=f'Epoch {epoch + 1}/{epochs}', unit='batch', leave=False)
         for carved, target, cond, valid_missing in batch_bar:
             # carved        : (B, 1, P, P, P)
             # target        : (B, 1, P, P, P)
@@ -245,14 +239,13 @@ def train(
         avg_loss = epoch_loss / max(n_batches, 1)
         epoch_bar.set_postfix(loss=f'{avg_loss:.3e}', lr=f'{scheduler.get_last_lr()[0]:.2e}')
         logger.info("Epoch %d/%d  loss=%.4e  lr=%.2e",
-                    epoch + 1, start_epoch + epochs, avg_loss,
+                    epoch + 1, epochs, avg_loss,
                     scheduler.get_last_lr()[0])
 
     # ── Save checkpoint ───────────────────────────────────────────────────
     ckpt_path = out_dir / 'checkpoint.pt'
     torch.save({
         'model': model.state_dict(),
-        'epoch': start_epoch + epochs,
         'alpha_deg': alpha_deg,
         'half_space': half_space,
         'patch_size': patch_size,
@@ -273,7 +266,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument('--alpha_deg',       type=float, required=True)
     p.add_argument('--half_space',      default='y', choices=['y', 'z'])
     p.add_argument('--output_dir',      required=True)
-    p.add_argument('--epochs',          type=int, default=100)
+    p.add_argument('--epochs',          type=int, default=5)
     p.add_argument('--batch_size',      type=int, default=2)
     p.add_argument('--lr',              type=float, default=1e-4)
     p.add_argument('--patch_size',      type=int, default=64)

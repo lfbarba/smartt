@@ -139,7 +139,7 @@ def _run_inference(
 # ---------------------------------------------------------------------------
 
 def run_pipeline(
-    reconstruction: torch.Tensor,
+    reconstruction: Optional[torch.Tensor],
     y_dirs: np.ndarray,
     alpha_deg: float,
     half_space: str,
@@ -153,12 +153,14 @@ def run_pipeline(
     conditioning_dim: int = 128,
     stride: Optional[int] = None,
     num_workers: int = 0,
+    start_volume_dir: Optional[str | Path] = None,
 ) -> Path:
     """Run the iterative SAXS-TT missing-wedge correction pipeline.
 
     Parameters
     ----------
     reconstruction  : (K, X, Y, Z) float32 tensor — initial FBP/GD reconstruction.
+        Pass ``None`` when ``start_volume_dir`` is set (reconstruction already on disk).
     y_dirs          : (K, 3) float64 ndarray — q-directions from fibonacci_hemisphere.
     alpha_deg       : half-angle (°) of the goniometer's unmeasurable polar caps.
     half_space      : 'z' or 'y' — must match the half_space used during reconstruction.
@@ -172,29 +174,59 @@ def run_pipeline(
     conditioning_dim: sinusoidal embedding / cross_attention_dim.
     stride          : inference patch stride (defaults to patch_size // 2).
     num_workers     : DataLoader workers.
+    start_volume_dir: if set, skip saving reconstruction and use this directory as
+        round_00 (the K .npy files must already exist there).
 
     Returns
     -------
-    final_volume_dir : Path to the directory containing the K corrected .npy
-                       volumes from the last round.
+    final_volume_dir : Path to the ``final/`` directory containing the K corrected
+                       .npy volumes produced by applying the fully-trained model to
+                       the original round_00 data.
     """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     # ── Save shared metadata ──────────────────────────────────────────────
     y_dirs_path = out / 'y_dirs.npy'
-    np.save(y_dirs_path, np.asarray(y_dirs, dtype=np.float64))
-    logger.info("Saved y_dirs → %s", y_dirs_path)
+    if not y_dirs_path.exists():
+        np.save(y_dirs_path, np.asarray(y_dirs, dtype=np.float64))
+        logger.info("Saved y_dirs → %s", y_dirs_path)
 
-    # ── Round 0: save initial FBP volumes ────────────────────────────────
-    round0_dir = out / 'round_00'
-    logger.info("Saving initial reconstruction to %s …", round0_dir)
-    save_reconstruction_volumes(reconstruction, round0_dir)
+    # ── Round 0: save initial FBP volumes (or use pre-existing dir) ───────
+    if start_volume_dir is not None:
+        round0_dir = Path(start_volume_dir)
+        logger.info("Using pre-existing volume directory as round_00: %s", round0_dir)
+    else:
+        round0_dir = out / 'round_00'
+        logger.info("Saving initial reconstruction to %s …", round0_dir)
+        save_reconstruction_volumes(reconstruction, round0_dir)
 
+    # ── Detect last fully-completed round (safe resume after crash) ───────
+    # A round is complete when both its checkpoint.pt AND its volumes directory
+    # (with K .npy files) exist.  Scan in reverse so we find the latest one.
+    K = len(y_dirs)
     current_volume_dir = round0_dir
     prev_checkpoint: Optional[Path] = None
+    start_round = 1
 
-    for rnd in range(1, num_rounds + 1):
+    for rnd in range(num_rounds, 0, -1):
+        ckpt  = out / f'round_{rnd:02d}' / 'checkpoint.pt'
+        vols  = out / f'round_{rnd:02d}_volumes'
+        n_vols = len(list(vols.glob('vol_*.npy'))) if vols.exists() else 0
+        if ckpt.exists() and n_vols == K:
+            prev_checkpoint    = ckpt
+            current_volume_dir = vols
+            start_round        = rnd + 1
+            logger.info(
+                "Resuming: rounds 1–%d already complete. Starting from round %d.",
+                rnd, start_round,
+            )
+            break
+
+    if start_round == 1 and prev_checkpoint is None:
+        logger.info("No completed rounds found. Starting from round 1.")
+
+    for rnd in range(start_round, num_rounds + 1):
         round_tag = f'round_{rnd:02d}'
         logger.info("=" * 60)
         logger.info("ROUND %d / %d", rnd, num_rounds)
