@@ -25,6 +25,7 @@ from mumott import DataContainer
 
 from smartt.projectors.astra_projector import (
     backproject,
+    build_mumott_projector,
     _create_astra_geometries_from_mumott,
     _backproject_single_gpu,
     _backproject_single_cpu,
@@ -517,9 +518,9 @@ def saxs_fbp_reconstruction(
 
     # Exclude directions within alpha_max of the beam axis: those have no
     # accessible projections (no beam can be ⊥ y_k within the tilt cone).
-    outer_angles = np.asarray(list(geometry.outer_angles))
-    alpha_max_deg = math.degrees(float(np.max(np.abs(outer_angles))))
-    y_directions = fibonacci_hemisphere(k_fibonacci, pole_gap_deg=alpha_max_deg, half_space=half_space)
+    # outer_angles = np.asarray(list(geometry.outer_angles))
+    # alpha_max_deg = math.degrees(float(np.max(np.abs(outer_angles))))
+    y_directions = fibonacci_hemisphere(k_fibonacci, half_space=half_space)
 
     # ------------------------------------------------------------------
     # 1. Build projection matrix on GPU (replaces CPU NearestNeighbor)
@@ -605,86 +606,200 @@ def saxs_fbp_reconstruction(
 
 
 # ---------------------------------------------------------------------------
-# Missing-wedge masks
+# Gradient descent reconstruction
 # ---------------------------------------------------------------------------
 
-def missing_wedge_masks(
-    y_directions: np.ndarray,
-    vol_shape: tuple,
-    geometry,
-) -> np.ndarray:
-    """Boolean missing-wedge masks in Fourier space for each FBP sub-volume.
+def saxs_gd_reconstruction(
+    dc: DataContainer,
+    k_fibonacci: int = 50,
+    n_iterations: int = 200,
+    lr: float = 1e-3,
+    loss_type: str = 'mse',
+    huber_delta: float = 1.0,
+    vol_init: Optional[torch.Tensor] = None,
+    clamp_min: Optional[float] = None,
+    n_projection_samples: int = 64,
+    device: Optional[torch.device] = None,
+    verbose: bool = False,
+    projection_method: str = 'voronoi',
+    ball_threshold: float = 0.3,
+    return_matrix: bool = False,
+    half_space: str = 'z',
+) -> tuple[torch.Tensor, np.ndarray]:
+    """Reconstruct the q-sphere function of each voxel with independent Adam optimizations.
 
-    For sub-CT k (rotation axis y_k), a Fourier frequency q_f is inaccessible
-    when the unique beam direction orthogonal to both y_k and q_f,
+    Drop-in replacement for :func:`saxs_fbp_reconstruction` that substitutes
+    gradient descent (Adam) for FBP in each scalar sub-CT.  The same
+    projection matrix and sinogram construction are used; only the inversion
+    step changes.
 
-        b_int = (y_k × q_f) / |y_k × q_f|,
-
-    falls outside the polar cap of accessible beam directions.  The cap is
-    characterised by the global tilt_max inferred from the geometry: beams
-    deviate from the beam axis (p_direction_0) by at most tilt_max.
+    For each of ``k_fibonacci`` target q-directions the scalar sinogram is
+    built identically to the FBP path.  An Adam optimizer then minimizes a
+    masked MSE (or Huber) loss between the ASTRA forward projection of the
+    current volume estimate and the measured sinogram.  Pixels with no valid
+    arc-fraction data are excluded from the loss.
 
     Parameters
     ----------
-    y_directions : (K, 3) ndarray
-        Unit q-direction vectors (output of :func:`fibonacci_hemisphere`).
-    vol_shape : (X, Y, Z) tuple
-        Shape of each reconstructed sub-volume.
-    geometry :
-        mumott ``Geometry`` of the full dataset.  Used to extract
-        ``p_direction_0`` (beam axis) and the rotation matrices (to compute
-        tilt_max empirically).
+    dc :
+        mumott ``DataContainer`` (geometry + projection data loaded from HDF5).
+    k_fibonacci :
+        Number of target q-directions (Fibonacci hemisphere grid).
+    n_iterations :
+        Number of Adam optimizer steps per q-direction.
+    lr :
+        Adam learning rate.
+    loss_type :
+        ``'mse'`` (default): masked mean-squared error.
+        ``'huber'``: masked Huber loss (less sensitive to outliers).
+    huber_delta :
+        Transition point for the Huber loss.  Ignored when ``loss_type='mse'``.
+    vol_init :
+        Optional initial volume.  Shape ``(K, X, Y, Z)`` (one per direction)
+        or ``(X, Y, Z)`` (broadcast to all directions).  Defaults to zeros.
+    clamp_min :
+        If not ``None``, clamp the volume to ``>= clamp_min`` after each step
+        (e.g. ``0.0`` for non-negativity).  Default ``None`` (no clamping).
+    n_projection_samples :
+        SLERP samples per arc for the GPU projection matrix.
+    device :
+        Compute device.  Defaults to CUDA if available.
+    verbose :
+        Show tqdm progress bars: outer bar over directions, inner bar over
+        iterations.
+    projection_method :
+        ``'voronoi'`` or ``'ball'``.
+    ball_threshold :
+        Angular radius in radians for the ``'ball'`` method.
+    return_matrix :
+        When ``True``, also return the :class:`FBPProjectionMatrix` helper.
+    half_space :
+        ``'z'`` or ``'y'``.
 
     Returns
     -------
-    masks : (K, X, Y, Z) bool ndarray
-        ``True`` where the Fourier bin is in the missing wedge.
+    reconstruction : (K, X, Y, Z) float32 tensor
+    y_directions : (K, 3) float64 ndarray
+    pm_helper : :class:`FBPProjectionMatrix`, only when ``return_matrix=True``
     """
-    # --- tilt_max from outer_angles (the physical constraint) --------------------
-    # The outer_angle is the goniometer tilt.  For the standard SAXS-TT geometry
-    # (beam along p_direction_0, outer tilt up to alpha_max) the accessible beam
-    # directions form a polar cap around p_direction_0 with half-angle alpha_max,
-    # so the z-component of any accessible beam (projected onto p_direction_0) is
-    # >= cos(alpha_max).
-    #
-    # We deliberately use the outer_angle from the geometry rather than the actual
-    # beam-direction dot products: complex scan trajectories (helical, conical, …)
-    # can produce beam directions that span the full sphere while the physical tilt
-    # constraint is still alpha_max, so reading beam_z empirically would give a
-    # falsely wide accessible range and an all-zero missing-wedge mask.
-    p0 = np.asarray(geometry.p_direction_0, dtype=float)
-    p0 /= np.linalg.norm(p0)
+    if loss_type not in ('mse', 'huber'):
+        raise ValueError(f"Unknown loss_type {loss_type!r}. Choose 'mse' or 'huber'.")
 
-    outer_angles = np.asarray(list(geometry.outer_angles))   # (N,) radians
-    alpha_max = float(np.max(np.abs(outer_angles)))
-    cos_alpha = math.cos(alpha_max)
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    logger.debug("missing_wedge_masks: p0=%s  alpha_max=%.2f°  cos_alpha=%.4f",
-                 p0, math.degrees(alpha_max), cos_alpha)
+    geometry = dc.geometry
+    vol_shape = tuple(geometry.volume_shape)
 
-    # --- 3-D Fourier frequency grid ------------------------------------------
-    X, Y, Z = vol_shape
-    gx, gy, gz = np.meshgrid(
-        np.fft.fftfreq(X), np.fft.fftfreq(Y), np.fft.fftfreq(Z), indexing='ij'
+    y_directions = fibonacci_hemisphere(k_fibonacci, half_space=half_space)
+
+    # ------------------------------------------------------------------
+    # 1. Build projection matrix on GPU
+    # ------------------------------------------------------------------
+    logger.info(
+        "Building projection matrix on GPU: K=%d, n_samples=%d, method=%s",
+        k_fibonacci, n_projection_samples, projection_method,
     )
-    qf = np.stack([gx, gy, gz], axis=-1)   # (X, Y, Z, 3)
+    pm_gpu = _build_projection_matrix_gpu(
+        geometry.probed_coordinates,
+        y_directions,
+        enforce_friedel_symmetry=True,
+        n_samples=n_projection_samples,
+        device=device,
+        method=projection_method,
+        threshold=ball_threshold,
+    )  # (N, M, K) on device
 
-    # --- per-direction mask --------------------------------------------------
-    masks = np.empty((len(y_directions), X, Y, Z), dtype=bool)
+    # ------------------------------------------------------------------
+    # 2. Build differentiable projector once (geometry is fixed)
+    # ------------------------------------------------------------------
+    projector = build_mumott_projector(geometry, device=device)
 
-    for k, y_k in enumerate(y_directions):
-        cross = np.cross(y_k, qf)                        # (X, Y, Z, 3)
-        cross_norm = np.linalg.norm(cross, axis=-1)      # (X, Y, Z)
-        parallel = cross_norm < 1e-10                     # q_f ∥ y_k
+    # ------------------------------------------------------------------
+    # 3. Move data to GPU
+    # ------------------------------------------------------------------
+    logger.info("Moving data to %s...", device)
+    data_gpu = torch.tensor(dc.data.astype(np.float32), device=device)   # (N, J, K_det, M)
+    valid_gpu = torch.tensor(
+        (dc.weights > 0).astype(np.float32), device=device,
+    )  # (N, J, K_det, M)
+    dw_gpu = data_gpu * valid_gpu
 
-        # |b_int · p0| = |(y_k × q_f) · p0| / |y_k × q_f|
-        # b_int is accessible when this projection onto the beam axis >= cos(alpha_max).
-        # Friedel symmetry means ±b_int are equivalent, so we use the absolute value.
-        b_int_dot_p0 = np.abs((cross * p0).sum(axis=-1)) / np.where(parallel, 1.0, cross_norm)
+    zero_vol = torch.zeros(vol_shape, dtype=torch.float32, device=device)
+    results: list[torch.Tensor] = []
 
-        missing = b_int_dot_p0 < cos_alpha
-        missing[parallel] = False   # q_f ∥ y_k: all contributing beams see it
+    # ------------------------------------------------------------------
+    # 4. One direction at a time: build sinogram, then optimize
+    # ------------------------------------------------------------------
+    outer = range(k_fibonacci)
+    if verbose:
+        outer = tqdm(outer, desc="SAXS GD", unit="dir")
 
-        masks[k] = missing
+    for k in outer:
+        pm_k = pm_gpu[:, :, k]  # (N, M)
 
-    return masks
+        sino_num = torch.einsum('njdm, nm -> njd', dw_gpu, pm_k)     # (N, J, K_det)
+        sino_den = torch.einsum('njdm, nm -> njd', valid_gpu, pm_k)  # (N, J, K_det)
+
+        sino_k = sino_num / sino_den.clamp(min=1e-10)
+        sino_k[sino_den < 1e-10] = 0.0
+
+        valid_mask = (sino_den >= 1e-10).float()                      # (N, J, K_det)
+        n_valid = max(int(valid_mask.sum().item()), 1)
+
+        n_sub = int((sino_den.sum(dim=(-1, -2)) > 0).sum())
+        if n_sub == 0:
+            logger.debug("Direction %d: no contributing projections.", k)
+            results.append(zero_vol)
+            if verbose:
+                outer.set_postfix(n_sub=0)
+            continue
+
+        # Initialise volume for this direction
+        if vol_init is not None:
+            if vol_init.ndim == 4:
+                recon = vol_init[k].clone().to(device).float()
+            else:
+                recon = vol_init.clone().to(device).float()
+        else:
+            recon = torch.zeros(vol_shape, dtype=torch.float32, device=device)
+
+        recon.requires_grad_(True)
+        optimizer = torch.optim.Adam([recon], lr=lr)
+
+        inner = range(n_iterations)
+        if verbose:
+            inner = tqdm(inner, desc=f"dir {k}", leave=False)
+
+        for _ in inner:
+            optimizer.zero_grad(set_to_none=True)
+            pred = projector(recon)                                   # (N, J, K_det)
+
+            if loss_type == 'mse':
+                loss = ((pred - sino_k) ** 2 * valid_mask).sum() / n_valid
+            else:
+                loss = (
+                    torch.nn.functional.huber_loss(
+                        pred, sino_k, reduction='none', delta=huber_delta,
+                    ) * valid_mask
+                ).sum() / n_valid
+
+            loss.backward()
+            optimizer.step()
+
+            with torch.no_grad():
+                if clamp_min is not None:
+                    recon.clamp_(min=clamp_min)
+
+            if verbose:
+                inner.set_postfix(loss=f"{loss.item():.3e}")
+
+        results.append(recon.detach())
+        if verbose:
+            outer.set_postfix(n_sub=n_sub, loss=f"{loss.item():.3e}")
+
+    reconstruction = torch.stack(results, dim=0)  # (K, X, Y, Z)
+    if return_matrix:
+        pm_helper = FBPProjectionMatrix(pm_gpu.cpu().numpy(), y_directions)
+        return reconstruction, y_directions, pm_helper
+    return reconstruction, y_directions

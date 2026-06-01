@@ -8,7 +8,7 @@ from .reconstruction import (
     fibonacci_hemisphere,
     fbp_with_mumott_geometry,
     saxs_fbp_reconstruction,
-    missing_wedge_masks,
+    saxs_gd_reconstruction,
     FBPProjectionMatrix,
 )
 
@@ -16,6 +16,6 @@ __all__ = [
     'fibonacci_hemisphere',
     'fbp_with_mumott_geometry',
     'saxs_fbp_reconstruction',
-    'missing_wedge_masks',
+    'saxs_gd_reconstruction',
     'FBPProjectionMatrix',
 ]
