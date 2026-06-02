@@ -28,13 +28,14 @@ Usage (CLI)
 Directory layout produced
 --------------------------
     output_dir/
-      y_dirs.npy               — saved once, shared across all rounds
+      rsm_dirs.npy             — saved once, shared across all rounds
       round_00/                — original FBP volumes (K .npy files)
-      round_01/                — round 1 inference output
-          checkpoint.pt        — model checkpoint after round 1 training
-      round_02/                — round 2 inference output
-          checkpoint.pt        — fine-tuned from round_01/checkpoint.pt
+      round_01/                — checkpoint.pt after round 1 training
+      round_01_volumes/        — round 1 inference output (K .npy files)
+      round_02/                — checkpoint.pt (fine-tuned from round_01)
+      round_02_volumes/        — round 2 inference output
       ...
+      final/                   — fully-trained model applied to round_00 (output)
 
 Each round:
   1. Train on volumes in round_N/ (subprocess → smartt.saxs_isonet.train).
@@ -64,7 +65,7 @@ logger = logging.getLogger(__name__)
 
 def _run_training(
     volume_dir: Path,
-    y_dirs_path: Path,
+    rsm_dirs_path: Path,
     alpha_deg: float,
     half_space: str,
     checkpoint_dir: Path,
@@ -74,6 +75,7 @@ def _run_training(
     patch_size: int,
     n_samples: int,
     conditioning_dim: int,
+    min_wedge_deg: float,
     resume: Optional[Path],
     num_workers: int,
 ) -> Path:
@@ -81,7 +83,7 @@ def _run_training(
     cmd = [
         sys.executable, '-m', 'smartt.saxs_isonet.train',
         '--volume_dir',       str(volume_dir),
-        '--y_dirs_path',      str(y_dirs_path),
+        '--rsm_dirs_path',    str(rsm_dirs_path),
         '--alpha_deg',        str(alpha_deg),
         '--half_space',       half_space,
         '--output_dir',       str(checkpoint_dir),
@@ -91,6 +93,7 @@ def _run_training(
         '--patch_size',       str(patch_size),
         '--n_samples',        str(n_samples),
         '--conditioning_dim', str(conditioning_dim),
+        '--min_wedge_deg',    str(min_wedge_deg),
         '--num_workers',      str(num_workers),
         '--log_level',        'INFO',
     ]
@@ -98,13 +101,13 @@ def _run_training(
         cmd += ['--resume', str(resume)]
 
     logger.info("Launching training subprocess:\n  %s", ' '.join(cmd))
-    result = subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True)
     return checkpoint_dir / 'checkpoint.pt'
 
 
 def _run_inference(
     volume_dir: Path,
-    y_dirs_path: Path,
+    rsm_dirs_path: Path,
     checkpoint: Path,
     alpha_deg: float,
     half_space: str,
@@ -117,7 +120,7 @@ def _run_inference(
     cmd = [
         sys.executable, '-m', 'smartt.saxs_isonet.infer',
         '--volume_dir',       str(volume_dir),
-        '--y_dirs_path',      str(y_dirs_path),
+        '--rsm_dirs_path',    str(rsm_dirs_path),
         '--checkpoint',       str(checkpoint),
         '--alpha_deg',        str(alpha_deg),
         '--half_space',       half_space,
@@ -140,7 +143,7 @@ def _run_inference(
 
 def run_pipeline(
     reconstruction: Optional[torch.Tensor],
-    y_dirs: np.ndarray,
+    rsm_dirs: np.ndarray,
     alpha_deg: float,
     half_space: str,
     output_dir: str | Path,
@@ -151,6 +154,7 @@ def run_pipeline(
     patch_size: int = 64,
     n_samples: int = 2000,
     conditioning_dim: int = 128,
+    min_wedge_deg: float = 10.0,
     stride: Optional[int] = None,
     num_workers: int = 0,
     start_volume_dir: Optional[str | Path] = None,
@@ -161,7 +165,7 @@ def run_pipeline(
     ----------
     reconstruction  : (K, X, Y, Z) float32 tensor — initial FBP/GD reconstruction.
         Pass ``None`` when ``start_volume_dir`` is set (reconstruction already on disk).
-    y_dirs          : (K, 3) float64 ndarray — q-directions from fibonacci_hemisphere.
+    rsm_dirs        : (K, 3) float64 ndarray — RSM directions from fibonacci_hemisphere.
     alpha_deg       : half-angle (°) of the goniometer's unmeasurable polar caps.
     half_space      : 'z' or 'y' — must match the half_space used during reconstruction.
     output_dir      : root directory for all pipeline outputs.
@@ -172,6 +176,7 @@ def run_pipeline(
     patch_size      : cubic patch side-length (voxels).
     n_samples       : virtual dataset length per epoch.
     conditioning_dim: sinusoidal embedding / cross_attention_dim.
+    min_wedge_deg   : minimum missing arc (°) for a direction to be carved in training.
     stride          : inference patch stride (defaults to patch_size // 2).
     num_workers     : DataLoader workers.
     start_volume_dir: if set, skip saving reconstruction and use this directory as
@@ -187,10 +192,10 @@ def run_pipeline(
     out.mkdir(parents=True, exist_ok=True)
 
     # ── Save shared metadata ──────────────────────────────────────────────
-    y_dirs_path = out / 'y_dirs.npy'
-    if not y_dirs_path.exists():
-        np.save(y_dirs_path, np.asarray(y_dirs, dtype=np.float64))
-        logger.info("Saved y_dirs → %s", y_dirs_path)
+    rsm_dirs_path = out / 'rsm_dirs.npy'
+    if not rsm_dirs_path.exists():
+        np.save(rsm_dirs_path, np.asarray(rsm_dirs, dtype=np.float64))
+        logger.info("Saved rsm_dirs → %s", rsm_dirs_path)
 
     # ── Round 0: save initial FBP volumes (or use pre-existing dir) ───────
     if start_volume_dir is not None:
@@ -204,7 +209,7 @@ def run_pipeline(
     # ── Detect last fully-completed round (safe resume after crash) ───────
     # A round is complete when both its checkpoint.pt AND its volumes directory
     # (with K .npy files) exist.  Scan in reverse so we find the latest one.
-    K = len(y_dirs)
+    K = len(rsm_dirs)
     current_volume_dir = round0_dir
     prev_checkpoint: Optional[Path] = None
     start_round = 1
@@ -238,7 +243,7 @@ def run_pipeline(
         # ── Train ─────────────────────────────────────────────────────
         checkpoint = _run_training(
             volume_dir=current_volume_dir,
-            y_dirs_path=y_dirs_path,
+            rsm_dirs_path=rsm_dirs_path,
             alpha_deg=alpha_deg,
             half_space=half_space,
             checkpoint_dir=checkpoint_dir,
@@ -248,6 +253,7 @@ def run_pipeline(
             patch_size=patch_size,
             n_samples=n_samples,
             conditioning_dim=conditioning_dim,
+            min_wedge_deg=min_wedge_deg,
             resume=prev_checkpoint,
             num_workers=num_workers,
         )
@@ -257,7 +263,7 @@ def run_pipeline(
         infer_output_dir = out / f'round_{rnd:02d}_volumes'
         _run_inference(
             volume_dir=current_volume_dir,
-            y_dirs_path=y_dirs_path,
+            rsm_dirs_path=rsm_dirs_path,
             checkpoint=checkpoint,
             alpha_deg=alpha_deg,
             half_space=half_space,
@@ -282,7 +288,7 @@ def run_pipeline(
     final_dir = out / 'final'
     _run_inference(
         volume_dir=round0_dir,
-        y_dirs_path=y_dirs_path,
+        rsm_dirs_path=rsm_dirs_path,
         checkpoint=prev_checkpoint,
         alpha_deg=alpha_deg,
         half_space=half_space,
@@ -303,8 +309,8 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description='SAXS-TT missing-wedge correction pipeline')
     p.add_argument('--reconstruction_path', required=True,
                    help='Path to reconstruction .pt file with keys "reconstruction" and "y_directions"')
-    p.add_argument('--y_dirs_path',          default=None,
-                   help='Optional separate (K,3) .npy file for y_dirs (overrides reconstruction_path key)')
+    p.add_argument('--rsm_dirs_path',        default=None,
+                   help='Optional separate (K,3) .npy file for rsm_dirs (overrides reconstruction_path key)')
     p.add_argument('--alpha_deg',            type=float, required=True)
     p.add_argument('--half_space',           default='y', choices=['y', 'z'])
     p.add_argument('--output_dir',           required=True)
@@ -315,6 +321,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument('--patch_size',           type=int, default=64)
     p.add_argument('--n_samples',            type=int, default=2000)
     p.add_argument('--conditioning_dim',     type=int, default=128)
+    p.add_argument('--min_wedge_deg',        type=float, default=10.0)
     p.add_argument('--stride',               type=int, default=None)
     p.add_argument('--num_workers',          type=int, default=0)
     p.add_argument('--log_level',            default='INFO')
@@ -331,14 +338,14 @@ if __name__ == '__main__':
     saved = torch.load(args.reconstruction_path, map_location='cpu')
     reconstruction = saved['reconstruction']
 
-    if args.y_dirs_path is not None:
-        y_dirs = np.load(args.y_dirs_path)
+    if args.rsm_dirs_path is not None:
+        rsm_dirs = np.load(args.rsm_dirs_path)
     else:
-        y_dirs = np.asarray(saved['y_directions'])
+        rsm_dirs = np.asarray(saved['y_directions'])
 
     run_pipeline(
         reconstruction=reconstruction,
-        y_dirs=y_dirs,
+        rsm_dirs=rsm_dirs,
         alpha_deg=args.alpha_deg,
         half_space=args.half_space,
         output_dir=args.output_dir,
@@ -349,6 +356,7 @@ if __name__ == '__main__':
         patch_size=args.patch_size,
         n_samples=args.n_samples,
         conditioning_dim=args.conditioning_dim,
+        min_wedge_deg=args.min_wedge_deg,
         stride=args.stride,
         num_workers=args.num_workers,
     )
