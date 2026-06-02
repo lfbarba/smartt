@@ -25,6 +25,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from diffusers.optimization import get_cosine_schedule_with_warmup
 
 from smartt.saxs_isonet.dataset import MissingWedgeSAXS
 from smartt.saxs_isonet.wedge import goniometer_axis_for_half_space
@@ -161,8 +162,12 @@ def train(
         logger.info("Fine-tuning from checkpoint %s", resume)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=epochs, eta_min=lr * 0.1,
+    total_steps = len(loader) * args.epochs
+
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer=optimizer,
+        num_warmup_steps=200,
+        num_training_steps=total_steps,
     )
 
     # ── Training ──────────────────────────────────────────────────────────

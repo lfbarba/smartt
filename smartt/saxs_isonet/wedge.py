@@ -193,6 +193,47 @@ def sinusoidal_wedge_embedding(
     return emb.unsqueeze(0)                         # (1, 1, dim)
 
 
+def y_dir_embedding(
+    y_dir: np.ndarray,
+    dim: int = 128,
+    device: Optional[torch.device] = None,
+) -> torch.Tensor:
+    """Embed a 3D unit q-direction into a (1, 1, dim) conditioning tensor.
+
+    Each of the 3 components is independently embedded with sinusoidal features
+    at log-spaced frequencies, then concatenated.  This uniquely encodes both
+    the orientation and the implied missing-wedge size, unlike the scalar
+    missing_arc embedding which collapses directions with equal arc length.
+
+    Returns shape (1, 1, dim) — ready for encoder_hidden_states in
+    UNet3DConditionModel (expand to batch size B before passing to the model).
+    """
+    if device is None:
+        device = torch.device('cpu')
+
+    y = torch.as_tensor(y_dir, dtype=torch.float32, device=device)  # (3,)
+
+    # Split dim evenly across the 3 components; give the remainder to the last.
+    per = dim // 3
+    rem = dim - 3 * per
+    sizes = [per, per, per + rem]   # sums to dim
+
+    parts = []
+    for i, n in enumerate(sizes):
+        half = (n + 1) // 2   # ceil(n/2) so sin+cos >= n before truncation
+        freqs = torch.exp(
+            -np.log(10_000)
+            * torch.arange(half, dtype=torch.float32, device=device)
+            / max(half - 1, 1)
+        )
+        args  = y[i : i + 1] * freqs                            # (half,)
+        chunk = torch.cat([args.sin(), args.cos()], dim=0)[:n]  # (n,)
+        parts.append(chunk)
+
+    emb = torch.cat(parts, dim=0)           # (dim,)
+    return emb.unsqueeze(0).unsqueeze(0)    # (1, 1, dim)
+
+
 # ---------------------------------------------------------------------------
 # Visualisation
 # ---------------------------------------------------------------------------

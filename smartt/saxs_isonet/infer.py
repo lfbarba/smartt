@@ -30,7 +30,7 @@ from smartt.saxs_isonet.train import build_model
 from smartt.saxs_isonet.wedge import (
     goniometer_axis_for_half_space,
     missing_wedge_mask_3d,
-    sinusoidal_wedge_embedding,
+    y_dir_embedding,
 )
 
 logger = logging.getLogger(__name__)
@@ -185,10 +185,8 @@ def infer_volume(
     """
     vol_shape = tuple(vol.shape)
 
-    # Conditioning embedding for this volume's wedge
-    from smartt.saxs_isonet.wedge import missing_arc_length
-    arc = missing_arc_length(y_dir, alpha_deg, goniometer_axis)
-    cond = sinusoidal_wedge_embedding(arc, dim=conditioning_dim, device=device)
+    # Conditioning: full y_dir embedding — unique per orientation and size
+    cond = y_dir_embedding(y_dir, dim=conditioning_dim, device=device)
     cond = cond.expand(1, -1, -1)  # (1, 1, dim)
 
     timesteps = torch.zeros(1, device=device, dtype=torch.long)

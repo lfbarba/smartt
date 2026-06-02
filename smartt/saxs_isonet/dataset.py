@@ -33,9 +33,8 @@ from typing import Optional
 
 from smartt.saxs_isonet.wedge import (
     _unit,
-    missing_arc_length,
     missing_wedge_mask_3d,
-    sinusoidal_wedge_embedding,
+    y_dir_embedding,
 )
 
 
@@ -242,11 +241,11 @@ class MissingWedgeSAXS(Dataset):
         ]
 
         # ── Precompute conditioning embeddings ────────────────────────────
+        # Embed the full y_dir unit vector (3 components) so that each wedge
+        # orientation gets a unique conditioning — unlike the scalar missing_arc
+        # which collapses directions with the same arc length.
         self.cond_embs: list[torch.Tensor] = [
-            sinusoidal_wedge_embedding(
-                missing_arc_length(y, alpha_deg, goniometer_axis),
-                dim=conditioning_dim,
-            )  # (1, 1, dim)
+            y_dir_embedding(y, dim=conditioning_dim)  # (1, 1, dim)
             for y in y_dirs
         ]
 
