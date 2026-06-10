@@ -99,6 +99,15 @@ def _rot_z(angle_rad: float) -> np.ndarray:
     ])
 
 
+def _rot_y(angle_rad: float) -> np.ndarray:
+    c, s = np.cos(angle_rad), np.sin(angle_rad)
+    return np.array([
+        [ c, 0., s],
+        [0., 1., 0.],
+        [-s, 0., c],
+    ])
+
+
 # ---------------------------------------------------------------------------
 # Conditioning scalar
 # ---------------------------------------------------------------------------
@@ -210,23 +219,39 @@ def canonical_rotation(
 ) -> np.ndarray:
     """Rotation R (3×3) mapping the wedge of ``rsm_dir`` into the canonical frame.
 
-    ``R = R2 @ R1`` where R1 sends ``goniometer_axis → z`` and R2 rotates about z
-    to bring ``rsm_dir`` into the xz-plane.  Then ``R @ goniometer_axis = z`` and
-    ``R @ rsm_dir = (sinθ, 0, cosθ)`` with θ the polar angle from the axis.
+    The canonical frame is defined so that the missing-wedge cone axis lies along
+    the y-axis (ky direction) and the goniometer axis is in the yz-plane:
 
-    Used at inference to rotate each volume's wedge to canonical orientation
-    before the model, and to rotate the prediction back afterwards (via ``R.T``).
+      R @ rsm_dir  = y_hat = (0, 1, 0)
+      R @ g        = (0, cosθ, sinθ)   where θ = angle(rsm_dir, g)
+
+    In this frame the missing-wedge condition simplifies to:
+
+      |fx · sinθ| > cos(α) · √(fx² + fz²)
+
+    which is a band symmetric about the kz-axis, **identical in every ky slice**.
+    This is the clean orientation expected in the notebook: as you move off-centre
+    in ky, the wedge boundary stays aligned (no tilt).
+
+    ``R`` is used at inference to rotate the whole volume into canonical
+    orientation before patching, and ``Rᵀ`` rotates the filled result back.
     """
     if goniometer_axis is None:
         goniometer_axis = np.array([0., 0., 1.])
     g = _unit(goniometer_axis)
     r = _unit(rsm_dir)
-    z = np.array([0., 0., 1.])
+    y_hat = np.array([0., 1., 0.])
 
-    R1 = _rotation_between(g, z)
-    r1 = R1 @ r
-    phi = np.arctan2(r1[1], r1[0])      # azimuth; atan2(0,0)=0 → identity near pole
-    R2 = _rot_z(-phi)
+    # Step 1: rotate rsm_dir → y_hat.
+    R1 = _rotation_between(r, y_hat)
+
+    # Step 2: rotate about y_hat so the goniometer axis lands in the yz-plane
+    # (x-component = 0, z-component = sinθ > 0).
+    g1 = R1 @ g               # g in the R1 frame; g1_y = cosθ (preserved by R1)
+    # Azimuthal angle of g1's xz-projection from the z-axis.
+    phi = np.arctan2(g1[0], g1[2])   # atan2(0,0)=0 → identity when g ∥ y
+    R2 = _rot_y(-phi)
+
     return R2 @ R1
 
 
@@ -234,14 +259,33 @@ def canonical_rsm_dir(
     rsm_dir: np.ndarray,
     goniometer_axis: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """The RSM direction expressed in the canonical frame: ``(sinθ, 0, cosθ)``.
+    """RSM direction in the canonical frame — always y_hat = (0, 1, 0).
 
-    Equal to ``canonical_rotation(rsm_dir, g) @ rsm_dir`` by construction, so the
-    canonical mask built from it matches what inference produces by rotating with
-    ``canonical_rotation``.
+    The canonical rotation is defined to map rsm_dir → y_hat, so this is a
+    constant.  The function is kept for API symmetry and as a reminder that the
+    canonical mask must use y_hat as the RSM direction.
     """
-    R = canonical_rotation(rsm_dir, goniometer_axis)
-    return R @ _unit(rsm_dir)
+    return np.array([0., 1., 0.])
+
+
+def canonical_goniometer_axis(
+    rsm_dir: np.ndarray,
+    goniometer_axis: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Goniometer axis in the canonical frame: ``(0, cosθ, sinθ)``.
+
+    θ = angle(rsm_dir, goniometer_axis) is preserved by the rotation, and the
+    canonical rotation maps g into the yz-plane.  The canonical missing-wedge
+    mask must be computed with this axis (not z_hat) to produce the correct
+    kz-aligned band.
+    """
+    if goniometer_axis is None:
+        goniometer_axis = np.array([0., 0., 1.])
+    g = _unit(goniometer_axis)
+    r = _unit(rsm_dir)
+    cos_theta = float(np.clip(np.dot(r, g), -1., 1.))
+    sin_theta = float(np.sqrt(max(0., 1. - cos_theta ** 2)))
+    return np.array([0., cos_theta, sin_theta])
 
 
 # ---------------------------------------------------------------------------

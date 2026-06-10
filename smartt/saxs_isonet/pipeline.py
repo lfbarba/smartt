@@ -54,7 +54,8 @@ from typing import Optional
 import numpy as np
 import torch
 
-from smartt.saxs_isonet.dataset import save_reconstruction_volumes
+from smartt.saxs_isonet.dataset import compute_norm_stats, save_reconstruction_volumes
+from smartt.saxs_isonet.preprocess import make_sphere_mask
 
 logger = logging.getLogger(__name__)
 
@@ -65,17 +66,21 @@ logger = logging.getLogger(__name__)
 
 def _run_training(
     volume_dir: Path,
+    target_dir: Path,
     rsm_dirs_path: Path,
+    norm_stats_path: Path,
     alpha_deg: float,
     half_space: str,
     checkpoint_dir: Path,
     epochs: int,
     batch_size: int,
     lr: float,
-    patch_size: int,
+    weight_decay: float,
+    cube_size: int,
     n_samples: int,
     conditioning_dim: int,
     min_wedge_deg: float,
+    max_rsm_wedge_deg: Optional[float],
     resume: Optional[Path],
     num_workers: int,
 ) -> Path:
@@ -83,20 +88,25 @@ def _run_training(
     cmd = [
         sys.executable, '-m', 'smartt.saxs_isonet.train',
         '--volume_dir',       str(volume_dir),
+        '--target_dir',       str(target_dir),
         '--rsm_dirs_path',    str(rsm_dirs_path),
+        '--norm_stats_path',  str(norm_stats_path),
         '--alpha_deg',        str(alpha_deg),
         '--half_space',       half_space,
         '--output_dir',       str(checkpoint_dir),
         '--epochs',           str(epochs),
         '--batch_size',       str(batch_size),
         '--lr',               str(lr),
-        '--patch_size',       str(patch_size),
+        '--weight_decay',     str(weight_decay),
+        '--cube_size',        str(cube_size),
         '--n_samples',        str(n_samples),
         '--conditioning_dim', str(conditioning_dim),
         '--min_wedge_deg',    str(min_wedge_deg),
         '--num_workers',      str(num_workers),
         '--log_level',        'INFO',
     ]
+    if max_rsm_wedge_deg is not None:
+        cmd += ['--max_rsm_wedge_deg', str(max_rsm_wedge_deg)]
     if resume is not None:
         cmd += ['--resume', str(resume)]
 
@@ -108,11 +118,12 @@ def _run_training(
 def _run_inference(
     volume_dir: Path,
     rsm_dirs_path: Path,
+    norm_stats_path: Path,
     checkpoint: Path,
     alpha_deg: float,
     half_space: str,
     output_dir: Path,
-    patch_size: int,
+    cube_size: int,
     stride: Optional[int],
     conditioning_dim: int,
 ) -> Path:
@@ -121,11 +132,12 @@ def _run_inference(
         sys.executable, '-m', 'smartt.saxs_isonet.infer',
         '--volume_dir',       str(volume_dir),
         '--rsm_dirs_path',    str(rsm_dirs_path),
+        '--norm_stats_path',  str(norm_stats_path),
         '--checkpoint',       str(checkpoint),
         '--alpha_deg',        str(alpha_deg),
         '--half_space',       half_space,
         '--output_dir',       str(output_dir),
-        '--patch_size',       str(patch_size),
+        '--cube_size',        str(cube_size),
         '--conditioning_dim', str(conditioning_dim),
         '--log_level',        'INFO',
     ]
@@ -151,10 +163,12 @@ def run_pipeline(
     epochs_per_round: int = 100,
     batch_size: int = 2,
     lr: float = 1e-4,
-    patch_size: int = 64,
+    weight_decay: float = 0.0,
+    cube_size: int = 32,
     n_samples: int = 2000,
     conditioning_dim: int = 128,
     min_wedge_deg: float = 10.0,
+    max_rsm_wedge_deg: Optional[float] = None,
     stride: Optional[int] = None,
     num_workers: int = 0,
     start_volume_dir: Optional[str | Path] = None,
@@ -172,12 +186,13 @@ def run_pipeline(
     num_rounds      : number of train→infer iterations.
     epochs_per_round: training epochs per round (fine-tuned from previous checkpoint).
     batch_size      : DataLoader batch size during training.
-    lr              : Adam learning rate.
-    patch_size      : cubic patch side-length (voxels).
+    lr              : AdamW learning rate.
+    weight_decay    : AdamW weight decay.
+    cube_size       : model input side-length (load size = ceil(√3·cube_size)).
     n_samples       : virtual dataset length per epoch.
     conditioning_dim: sinusoidal embedding / cross_attention_dim.
     min_wedge_deg   : minimum missing arc (°) for a direction to be carved in training.
-    stride          : inference patch stride (defaults to patch_size // 2).
+    stride          : inference patch stride (defaults to cube_size // 2).
     num_workers     : DataLoader workers.
     start_volume_dir: if set, skip saving reconstruction and use this directory as
         round_00 (the K .npy files must already exist there).
@@ -205,6 +220,16 @@ def run_pipeline(
         round0_dir = out / 'round_00'
         logger.info("Saving initial reconstruction to %s …", round0_dir)
         save_reconstruction_volumes(reconstruction, round0_dir)
+
+    # ── Fixed per-volume normalization stats from round_00 (target) ───────
+    # Computed once and reused by every round + inference, so input and target
+    # always share identical, stable per-volume scales (the wedge-fill task is
+    # scale-equivariant; freezing the stats keeps the objective stationary).
+    norm_stats_path = out / 'norm_stats.npy'
+    if not norm_stats_path.exists():
+        sphere_mask = make_sphere_mask(cube_size)
+        np.save(norm_stats_path, compute_norm_stats(round0_dir, mask=sphere_mask))
+        logger.info("Saved norm_stats → %s", norm_stats_path)
 
     # ── Detect last fully-completed round (safe resume after crash) ───────
     # A round is complete when both its checkpoint.pt AND its volumes directory
@@ -243,17 +268,21 @@ def run_pipeline(
         # ── Train ─────────────────────────────────────────────────────
         checkpoint = _run_training(
             volume_dir=current_volume_dir,
+            target_dir=round0_dir,
             rsm_dirs_path=rsm_dirs_path,
+            norm_stats_path=norm_stats_path,
             alpha_deg=alpha_deg,
             half_space=half_space,
             checkpoint_dir=checkpoint_dir,
             epochs=epochs_per_round,
             batch_size=batch_size,
             lr=lr,
-            patch_size=patch_size,
+            weight_decay=weight_decay,
+            cube_size=cube_size,
             n_samples=n_samples,
             conditioning_dim=conditioning_dim,
             min_wedge_deg=min_wedge_deg,
+            max_rsm_wedge_deg=max_rsm_wedge_deg,
             resume=prev_checkpoint,
             num_workers=num_workers,
         )
@@ -264,11 +293,12 @@ def run_pipeline(
         _run_inference(
             volume_dir=current_volume_dir,
             rsm_dirs_path=rsm_dirs_path,
+            norm_stats_path=norm_stats_path,
             checkpoint=checkpoint,
             alpha_deg=alpha_deg,
             half_space=half_space,
             output_dir=infer_output_dir,
-            patch_size=patch_size,
+            cube_size=cube_size,
             stride=stride,
             conditioning_dim=conditioning_dim,
         )
@@ -289,11 +319,12 @@ def run_pipeline(
     _run_inference(
         volume_dir=round0_dir,
         rsm_dirs_path=rsm_dirs_path,
+        norm_stats_path=norm_stats_path,
         checkpoint=prev_checkpoint,
         alpha_deg=alpha_deg,
         half_space=half_space,
         output_dir=final_dir,
-        patch_size=patch_size,
+        cube_size=cube_size,
         stride=stride,
         conditioning_dim=conditioning_dim,
     )
@@ -318,7 +349,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument('--epochs_per_round',     type=int, default=100)
     p.add_argument('--batch_size',           type=int, default=2)
     p.add_argument('--lr',                   type=float, default=1e-4)
-    p.add_argument('--patch_size',           type=int, default=64)
+    p.add_argument('--weight_decay',         type=float, default=0.0)
+    p.add_argument('--cube_size',            type=int, default=32)
     p.add_argument('--n_samples',            type=int, default=2000)
     p.add_argument('--conditioning_dim',     type=int, default=128)
     p.add_argument('--min_wedge_deg',        type=float, default=10.0)
@@ -353,7 +385,8 @@ if __name__ == '__main__':
         epochs_per_round=args.epochs_per_round,
         batch_size=args.batch_size,
         lr=args.lr,
-        patch_size=args.patch_size,
+        weight_decay=args.weight_decay,
+        cube_size=args.cube_size,
         n_samples=args.n_samples,
         conditioning_dim=args.conditioning_dim,
         min_wedge_deg=args.min_wedge_deg,

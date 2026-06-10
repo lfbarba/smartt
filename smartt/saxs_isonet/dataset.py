@@ -1,26 +1,33 @@
 """Training dataset for the SAXS-TT missing-wedge correction pipeline.
 
-The dataset is deliberately lightweight: it only loads the K reconstructed
-volumes and, on each call, returns a **raw** cubic patch plus two indices.
-The expensive SO(3) rotation and Fourier carving happen on the GPU in
-:class:`smartt.saxs_isonet.augment.VolumeAugmentor` (CPU rotation is the
-training bottleneck).
+Lightweight: loads K spherically-masked volumes (normalized) into memory, and
+on each call returns a full (cube_size, cube_size, cube_size) volume plus two
+indices. Rotation and Fourier carving happen on the GPU in VolumeAugmentor.
 
-``__getitem__`` returns ``(patch, k_src, k_wedge)``:
-  - ``patch``   : (1, P, P, P) raw patch drawn from RSM volume ``k_src``.
-  - ``k_src``   : index of the source RSM volume (its measured-frequency mask
-                  is excluded from the loss after rotation).
-  - ``k_wedge`` : index of the RSM direction whose canonical wedge is carved.
+``__getitem__`` → ``(v0, v1, k_src, k_wedge)``:
+  - ``v0``     : (1, C, C, C) normalized input volume for k_src (this round).
+  - ``v1``     : (1, C, C, C) frozen target volume at k_src (round_00 in
+                  dual-source mode; equals v0 when ``target_dir`` is None).
+  - ``k_src``  : source RSM index (its measured mask is excluded from the loss).
+  - ``k_wedge``: RSM index whose canonical wedge is carved. Drawn only from
+                  directions with missing arc ≥ ``min_wedge_deg``.
 
-``k_src`` and ``k_wedge`` are sampled independently.  ``k_wedge`` is restricted
-to directions with a missing arc ≥ ``min_wedge_deg`` — tiny near-pole wedges
-carry almost no learning signal and would waste compute.  ``k_src`` is
-unrestricted: near-pole volumes (almost complete ground truth) are the most
-valuable sources to carve from.
+Design choices baked in here:
+  - **Spherical masking**: volumes are pre-cropped to C×C×C and masked to the
+    inscribed sphere (exterior = 0 in normalised space). Rotation corner
+    artefacts are avoided without a √3-oversampled load buffer.
+  - **Full-volume training**: each dataset item is the complete volume for a
+    randomly chosen eligible k_src; no subvolume windows are drawn.
+  - **Fixed target** (dual-source): input changes each round, target = round_00.
+  - **Per-volume normalization fixed to round_00 stats**: freezing the scale
+    keeps input and target on identical, stable scales across rounds.
+  - **Interior-only norm stats**: mean/std computed from sphere-interior voxels
+    only, so the exterior zeros do not bias normalization.
 
 Public API
 ----------
 save_reconstruction_volumes(reconstruction, output_dir)
+compute_norm_stats(volume_dir, mask=None)
 MissingWedgeSAXS(Dataset)
 """
 from __future__ import annotations
@@ -33,41 +40,52 @@ from pathlib import Path
 from torch.utils.data import Dataset
 from typing import Optional
 
+from smartt.saxs_isonet.preprocess import make_sphere_mask
 from smartt.saxs_isonet.wedge import _unit, all_missing_arcs
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# I/O helper
+# I/O helpers
 # ---------------------------------------------------------------------------
 
 def save_reconstruction_volumes(
     reconstruction: torch.Tensor,
     output_dir: str | Path,
 ) -> list[Path]:
-    """Save the (K, X, Y, Z) reconstruction tensor as K numbered .npy files.
-
-    Parameters
-    ----------
-    reconstruction : (K, X, Y, Z) float32 tensor — output of saxs_fbp/gd_reconstruction.
-    output_dir : target directory (created if absent).
-
-    Returns
-    -------
-    paths : list of K Path objects, one per saved file.
-    """
+    """Save the (K, X, Y, Z) reconstruction tensor as K numbered .npy files."""
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     rec = reconstruction.detach().cpu().numpy() if isinstance(reconstruction, torch.Tensor) \
           else np.asarray(reconstruction)
-    K = rec.shape[0]
     paths = []
-    for k in range(K):
+    for k in range(rec.shape[0]):
         p = out / f'vol_{k:04d}.npy'
         np.save(p, rec[k].astype(np.float32))
         paths.append(p)
     return paths
+
+
+def compute_norm_stats(
+    volume_dir: str | Path,
+    mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Per-volume (mean, std) for all vol_*.npy in a directory → (K, 2) float64.
+
+    mask : (X, Y, Z) bool — if provided, statistics are computed from the True
+           voxels only. Pass the sphere mask to exclude exterior zeros from the
+           normalization statistics.
+    """
+    paths = sorted(Path(volume_dir).glob('vol_*.npy'))
+    if not paths:
+        raise FileNotFoundError(f"No vol_*.npy files found in {volume_dir}")
+    stats = []
+    for p in paths:
+        v = np.load(p).astype(np.float64)
+        interior = v[mask] if mask is not None else v.ravel()
+        stats.append((interior.mean(), interior.std() + 1e-8))
+    return np.array(stats, dtype=np.float64)   # (K, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -77,22 +95,23 @@ def save_reconstruction_volumes(
 class MissingWedgeSAXS(Dataset):
     """Self-supervised dataset for SAXS-TT missing-wedge correction.
 
-    Loads K .npy volumes from ``volume_dir`` (sorted by name, matching the order
-    of ``rsm_dirs``) and returns raw patches + indices.  All augmentation is
-    delegated to :class:`VolumeAugmentor` on the training device.
-
     Parameters
     ----------
-    volume_dir : directory containing K .npy volume files (float32, (X,Y,Z)).
-    rsm_dirs   : (K, 3) RSM directions (from fibonacci_hemisphere).
-    alpha_deg  : half-angle (°) of the unmeasurable goniometer polar caps.
-    goniometer_axis : tilt-axis unit vector (defaults to [0,0,1]).
-    patch_size : spatial side-length (voxels) of cubic training patches.
-    n_samples  : virtual dataset length (patches drawn per epoch).
-    normalize  : ``'volume'`` (per-volume zero-mean unit-variance) or ``'none'``.
-    min_wedge_deg : minimum missing arc (degrees) for a direction to be eligible
-        as ``k_wedge``.  Directions below this carve almost nothing and are
-        skipped.  Set 0 to allow all directions.
+    volume_dir        : directory with K input vol_*.npy (this round's volumes).
+    rsm_dirs          : (K, 3) RSM directions.
+    alpha_deg         : half-angle (°) of the unmeasurable goniometer polar caps.
+    goniometer_axis   : tilt-axis unit vector (defaults to [0,0,1]).
+    cube_size         : volume side length C; volumes must be (C, C, C) cubes.
+    n_samples         : virtual dataset length (items drawn per epoch).
+    min_wedge_deg     : minimum missing arc (°) for a direction to be eligible
+                        as k_wedge.
+    max_rsm_wedge_deg : maximum missing arc (°) for an RSM location to be used
+                        as k_src. None = all K volumes eligible. Raises
+                        ValueError if the filter leaves no eligible volumes.
+    target_dir        : directory with K frozen target vol_*.npy (round_00).
+                        None = single-source (target == input).
+    norm_stats        : (K, 2) per-volume (mean, std). Computed from target
+                        volumes if None.
     """
 
     def __init__(
@@ -101,79 +120,98 @@ class MissingWedgeSAXS(Dataset):
         rsm_dirs: np.ndarray,
         alpha_deg: float,
         goniometer_axis: Optional[np.ndarray] = None,
-        patch_size: int = 64,
+        cube_size: int = 64,
         n_samples: int = 2000,
-        normalize: str = 'volume',
         min_wedge_deg: float = 10.0,
+        max_rsm_wedge_deg: Optional[float] = None,
+        target_dir: Optional[str | Path] = None,
+        norm_stats: Optional[np.ndarray] = None,
     ) -> None:
-        self.patch_size = patch_size
+        self.cube_size = cube_size
         self.n_samples = n_samples
-        self.rsm_dirs = np.asarray(rsm_dirs, dtype=float)
+        self.rsm_dirs  = np.asarray(rsm_dirs, dtype=float)
         self.alpha_deg = float(alpha_deg)
 
         if goniometer_axis is None:
             goniometer_axis = np.array([0., 0., 1.])
         self.goniometer_axis = _unit(np.asarray(goniometer_axis, dtype=float))
 
-        # ── Load volumes ──────────────────────────────────────────────────
-        volume_dir = Path(volume_dir)
-        paths = sorted(volume_dir.glob('vol_*.npy'))
-        if not paths:
-            raise FileNotFoundError(f"No vol_*.npy files found in {volume_dir}")
         K = len(self.rsm_dirs)
-        if len(paths) != K:
-            raise ValueError(
-                f"Found {len(paths)} .npy files in {volume_dir} "
-                f"but rsm_dirs has K={K} directions."
-            )
-
-        self.volumes: list[torch.Tensor] = []
-        for p in paths:
-            vol = np.load(p).astype(np.float32)
-            if normalize == 'volume':
-                vol = (vol - vol.mean()) / (vol.std() + 1e-8)
-            self.volumes.append(torch.from_numpy(vol))  # (X, Y, Z)
-
         self.K = K
 
-        # ── Eligible carve directions (skip near-zero wedges) ─────────────
-        arcs_deg = np.degrees(all_missing_arcs(self.rsm_dirs, alpha_deg, self.goniometer_axis))
-        candidates = np.where(arcs_deg >= min_wedge_deg)[0]
-        if candidates.size == 0:
-            logger.warning(
-                "No RSM direction has a missing arc ≥ %.1f°; using all K directions "
-                "as carve candidates.", min_wedge_deg,
+        self.sphere_mask = make_sphere_mask(cube_size)   # (C, C, C) bool
+
+        v0_paths = self._resolve(volume_dir, K, 'volume_dir')
+        v1_paths = (self._resolve(target_dir, K, 'target_dir')
+                    if target_dir is not None else v0_paths)
+        self.dual_source = target_dir is not None
+
+        if norm_stats is None:
+            norm_stats = compute_norm_stats(
+                Path(v1_paths[0]).parent, mask=self.sphere_mask,
             )
-            candidates = np.arange(K)
-        self.wedge_candidates = candidates.astype(np.int64)
+        self.norm_stats = np.asarray(norm_stats, dtype=np.float64)
+        if self.norm_stats.shape != (K, 2):
+            raise ValueError(f"norm_stats must be (K,2)=({K},2), got {self.norm_stats.shape}")
+
+        self.v0 = [self._load_norm(v0_paths[k], k) for k in range(K)]
+        self.v1 = (self.v0 if not self.dual_source
+                   else [self._load_norm(v1_paths[k], k) for k in range(K)])
+
+        arcs_deg = np.degrees(all_missing_arcs(self.rsm_dirs, alpha_deg, self.goniometer_axis))
+
+        # k_wedge pool: directions with a large-enough missing wedge to carve.
+        carve_pool = np.where(arcs_deg >= min_wedge_deg)[0]
+        if carve_pool.size == 0:
+            logger.warning("No direction with missing arc ≥ %.1f°; using all K.", min_wedge_deg)
+            carve_pool = np.arange(K)
+        self.wedge_candidates = carve_pool.astype(np.int64)
+
+        # k_src pool: RSM locations with a small-enough wedge to learn from.
+        if max_rsm_wedge_deg is not None:
+            src_pool = np.where(arcs_deg <= max_rsm_wedge_deg)[0]
+            if src_pool.size == 0:
+                raise ValueError(
+                    f"No RSM location has missing arc ≤ {max_rsm_wedge_deg}°. "
+                    "Loosen max_rsm_wedge_deg or leave it unset to use all K volumes."
+                )
+            self.src_candidates = src_pool.astype(np.int64)
+        else:
+            self.src_candidates = np.arange(K, dtype=np.int64)
+
         logger.info(
-            "Dataset: K=%d volumes, %d eligible carve directions (min_wedge_deg=%.1f°).",
-            K, len(self.wedge_candidates), min_wedge_deg,
+            "Dataset: K=%d, cube=%d, dual_source=%s, %d carve dirs, %d src dirs.",
+            K, cube_size, self.dual_source,
+            len(self.wedge_candidates), len(self.src_candidates),
         )
+
+    @staticmethod
+    def _resolve(d: str | Path, K: int, name: str) -> list[Path]:
+        paths = sorted(Path(d).glob('vol_*.npy'))
+        if not paths:
+            raise FileNotFoundError(f"No vol_*.npy files found in {name}={d}")
+        if len(paths) != K:
+            raise ValueError(f"{name}={d}: found {len(paths)} files, expected K={K}")
+        return paths
+
+    def _load_norm(self, path: Path, k: int) -> torch.Tensor:
+        mean, std = self.norm_stats[k]
+        vol = (np.load(path).astype(np.float32) - mean) / std
+        vol[~self.sphere_mask] = 0.0
+        return torch.from_numpy(np.ascontiguousarray(vol))   # (C, C, C)
 
     # ------------------------------------------------------------------
 
     def __len__(self) -> int:
         return self.n_samples
 
-    def _random_patch(self, vol: torch.Tensor) -> torch.Tensor:
-        """Extract a random cubic patch from (X, Y, Z) volume → (1, P, P, P)."""
-        P = self.patch_size
-        X, Y, Z = vol.shape
-        x0 = int(torch.randint(0, max(1, X - P + 1), (1,)))
-        y0 = int(torch.randint(0, max(1, Y - P + 1), (1,)))
-        z0 = int(torch.randint(0, max(1, Z - P + 1), (1,)))
-        patch = vol[x0:x0 + P, y0:y0 + P, z0:z0 + P]
-        if patch.shape != (P, P, P):     # pad if a volume axis is smaller than P
-            padded = torch.zeros(P, P, P, dtype=vol.dtype)
-            padded[:patch.shape[0], :patch.shape[1], :patch.shape[2]] = patch
-            patch = padded
-        return patch.unsqueeze(0)        # (1, P, P, P)
-
     def __getitem__(self, idx: int):
-        k_src = int(torch.randint(0, self.K, (1,)))
-        patch = self._random_patch(self.volumes[k_src])      # (1, P, P, P)
+        k_src = int(self.src_candidates[
+            torch.randint(0, len(self.src_candidates), (1,))
+        ])
+        v0 = self.v0[k_src].unsqueeze(0)   # (1, C, C, C)
+        v1 = self.v1[k_src].unsqueeze(0)   # (1, C, C, C)
         k_wedge = int(self.wedge_candidates[
             torch.randint(0, len(self.wedge_candidates), (1,))
         ])
-        return patch, k_src, k_wedge
+        return v0, v1, k_src, k_wedge

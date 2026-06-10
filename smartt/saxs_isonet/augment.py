@@ -1,23 +1,18 @@
 """GPU-batched augmentation for SAXS-TT missing-wedge training.
 
-The CPU dataset only slices raw patches; the expensive SO(3) rotation and
-Fourier carving run here on the training device, mirroring the VolumeAugmentor
-design in isodiffusion (rotating volumes on CPU is the training bottleneck).
+The CPU dataset loads full spherically-masked (cube_size, cube_size, cube_size)
+volumes; the SO(3) rotation and Fourier carving run here on the training device.
 
-Fourier convention
--------------------
-All Fourier ops use the **fftshifted** layout (DC at the volume centre).  This
-lets a frequency-domain mask be rotated with ``grid_sample`` exactly like a
-real-space volume: rotation about the array centre == rotation about DC.
+Pipeline per batch:
+  1. Rotate the full cube volumes by a random SO(3) `R` (same R for v0 & v1).
+     The spherical mask makes corners safely zero after rotation — no oversampled
+     load buffer or center-crop is needed.
+  2. Carve the **canonical** wedge of `k_wedge` from v0 → model input.
+  3. target = rotated v1 (the fixed round_00 volume in dual-source mode).
+  4. valid_missing = (carved-missing) AND (source k_src measured-after-rotation).
 
-What the augmentor produces per sample (matching the agreed design)
--------------------------------------------------------------------
-- ``carved``        : rotated patch with the **canonical** wedge of ``k_wedge``
-                      zeroed (model input).
-- ``target``        : the rotated patch (supervision target).
-- ``cond``          : scalar missing-arc embedding for ``k_wedge``.
-- ``valid_missing`` : (carved-missing) AND (source ``k_src`` measured-after-rotation)
-                      — supervise only where we carved AND have trustworthy data.
+Fourier convention: fftshifted (DC centred), so a frequency mask rotates with
+`grid_sample` exactly like a real volume (rotation about centre == about DC).
 """
 from __future__ import annotations
 
@@ -30,6 +25,7 @@ import torch.nn.functional as F
 
 from smartt.saxs_isonet.wedge import (
     _unit,
+    canonical_goniometer_axis,
     canonical_rsm_dir,
     missing_arc_length,
     missing_wedge_mask_3d,
@@ -63,8 +59,8 @@ def rotate_batch(vols: torch.Tensor, R: torch.Tensor,
                  mode: str = 'bilinear') -> torch.Tensor:
     """Rotate a (B, D, H, W) batch by per-sample (B, 3, 3) rotations.
 
-    ``grid_sample`` performs inverse sampling, so ``theta`` uses ``Rᵀ`` to rotate
-    the *content* by ``R``.  ``mode='nearest'`` is used for boolean masks.
+    ``grid_sample`` does inverse sampling, so ``theta`` uses ``Rᵀ`` to rotate the
+    *content* by ``R``.  ``mode='nearest'`` is used for boolean masks.
     """
     B, D, H, W = vols.shape
     theta = torch.zeros(B, 3, 4, device=vols.device, dtype=vols.dtype)
@@ -94,9 +90,9 @@ def carve_shifted(vols: torch.Tensor, keep_shifted: torch.Tensor) -> torch.Tenso
 # ---------------------------------------------------------------------------
 
 class VolumeAugmentor:
-    """Rotate + carve a batch of raw patches on the GPU.
+    """Rotate → carve a batch on the GPU.
 
-    Precomputes, per RSM direction k (all in fftshifted layout):
+    Masks are precomputed at ``cube_size`` (fftshifted):
       - ``canonical_keep[k]`` : canonical (orientation-normalised) wedge keep-mask
       - ``measured_keep[k]``  : natural-orientation measured-frequency mask
       - ``cond[k]``           : scalar missing-arc conditioning embedding
@@ -107,29 +103,33 @@ class VolumeAugmentor:
         rsm_dirs: np.ndarray,
         alpha_deg: float,
         goniometer_axis: Optional[np.ndarray] = None,
-        patch_size: int = 64,
+        cube_size: int = 32,
         conditioning_dim: int = 128,
         device: Optional[torch.device] = None,
     ) -> None:
         self.device = device or torch.device('cpu')
-        P = patch_size
-        shape = (P, P, P)
+        self.cube_size = cube_size
+        self.alpha_deg = float(alpha_deg)
+        self.rsm_dirs = np.asarray(rsm_dirs, dtype=np.float64)
         g = (_unit(goniometer_axis) if goniometer_axis is not None
              else np.array([0., 0., 1.]))
+        self.goniometer_axis = g.copy()
+        shape = (cube_size, cube_size, cube_size)
 
-        # Canonical carved wedges (orientation fixed by canonical frame), shifted.
         canonical = [
             np.fft.fftshift(missing_wedge_mask_3d(
-                canonical_rsm_dir(r, g), alpha_deg, shape, np.array([0., 0., 1.])))
+                canonical_rsm_dir(r, g),          # always y_hat
+                alpha_deg, shape,
+                canonical_goniometer_axis(r, g),  # (0, cosθ, sinθ) → kz-aligned wedge
+            ))
             for r in rsm_dirs
         ]
-        # Original measured masks in natural orientation, shifted.
         measured = [
             np.fft.fftshift(missing_wedge_mask_3d(r, alpha_deg, shape, g))
             for r in rsm_dirs
         ]
-        self.canonical_keep = torch.from_numpy(np.stack(canonical)).to(self.device)  # (K,P,P,P) bool
-        self.measured_keep = torch.from_numpy(np.stack(measured)).to(self.device)    # (K,P,P,P) bool
+        self.canonical_keep = torch.from_numpy(np.stack(canonical)).to(self.device)  # (K,C,C,C) bool
+        self.measured_keep = torch.from_numpy(np.stack(measured)).to(self.device)    # (K,C,C,C) bool
 
         conds = [
             sinusoidal_wedge_embedding(missing_arc_length(r, alpha_deg, g),
@@ -145,40 +145,114 @@ class VolumeAugmentor:
         self.cond = self.cond.to(device)
         return self
 
-    def __call__(self, patches: torch.Tensor, k_src: torch.Tensor,
-                 k_wedge: torch.Tensor):
-        """Rotate + carve a batch.
+    def _measured_mask_rotated(self, R: torch.Tensor,
+                               k_src: torch.Tensor) -> torch.Tensor:
+        """Compute the measured-frequency mask after rotation R analytically.
+
+        After rotating a volume by R, frequency f (in the rotated frame) was
+        measured by k_src iff  R@rsm_dirs[k_src] and R@g  satisfy the same
+        closed-form condition as the original mask.  This avoids the aliasing
+        introduced by rotating a discrete boolean mask with nearest neighbours.
+
+        Returns (B, C, C, C) bool in **fftshifted** layout, matching canonical_keep.
+        """
+        B = R.shape[0]
+        device = R.device
+        C = self.cube_size
+        cos_alpha = float(np.cos(np.radians(self.alpha_deg)))
+
+        rsm_k = torch.from_numpy(
+            self.rsm_dirs[k_src.cpu().numpy()]
+        ).float().to(device)                                          # (B, 3)
+        g_t = torch.from_numpy(self.goniometer_axis).float().to(device)  # (3,)
+
+        # Rotate RSM dir and goniometer axis into the augmented frame.
+        rsm_rot = torch.einsum('bij,bj->bi', R, rsm_k)               # (B, 3)
+        g_rot   = (R @ g_t.unsqueeze(-1)).squeeze(-1)                 # (B, 3)
+
+        # Normalise (R is orthogonal; clamp guards against numerical drift).
+        rsm_rot = rsm_rot / rsm_rot.norm(dim=1, keepdim=True).clamp(min=1e-10)
+        g_rot   = g_rot   / g_rot.norm(  dim=1, keepdim=True).clamp(min=1e-10)
+
+        # fftshifted frequency grid: centre = DC, coords in (-0.5, 0.5].
+        idx = torch.arange(C, device=device)
+        freq = (idx - C // 2).float() / C                            # (C,)
+        FX, FY, FZ = torch.meshgrid(freq, freq, freq, indexing='ij') # (C,C,C)
+
+        # Broadcast batch dim → (B,1,1,1).
+        def b(t): return t.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        y0, y1, y2 = b(rsm_rot[:, 0]), b(rsm_rot[:, 1]), b(rsm_rot[:, 2])
+        g0, g1, g2 = b(g_rot[:, 0]),   b(g_rot[:, 1]),   b(g_rot[:, 2])
+        FX, FY, FZ = FX.unsqueeze(0), FY.unsqueeze(0), FZ.unsqueeze(0)  # (1,C,C,C)
+
+        # Scalar triple product (y × f) · g  — the same formula as missing_wedge_mask_3d.
+        cross_dot_g = (
+            g0 * (y1 * FZ - y2 * FY) +
+            g1 * (y2 * FX - y0 * FZ) +
+            g2 * (y0 * FY - y1 * FX)
+        )                                                              # (B,C,C,C)
+
+        f_dot_y = y0 * FX + y1 * FY + y2 * FZ
+        f_perp  = (FX**2 + FY**2 + FZ**2 - f_dot_y**2).clamp(min=0.).sqrt()
+
+        mask = cross_dot_g.abs() <= cos_alpha * f_perp                # (B,C,C,C)
+
+        # Friedel symmetry: keep(f) == keep(-f).
+        neg = (-torch.arange(C, device=device)) % C
+        mask_neg = mask[:, neg][:, :, neg][:, :, :, neg]
+        mask = mask & mask_neg
+
+        mask[:, C // 2, C // 2, C // 2] = True                       # DC always measured
+        return mask
+
+    def __call__(self, v0: torch.Tensor, v1: Optional[torch.Tensor],
+                 k_src: torch.Tensor, k_wedge: torch.Tensor):
+        """Augment a batch.
 
         Parameters
         ----------
-        patches : (B, 1, P, P, P) or (B, P, P, P) raw patches.
-        k_src   : (B,) long — source RSM index per sample (for the measured mask).
+        v0 : (B, 1, P, P, P) or (B, P, P, P) — raw patch_size windows (input source).
+        v1 : same shape — frozen target windows (round_00), or None for single-source
+             (then v1 = v0).
+        k_src   : (B,) long — source RSM index (for the measured mask).
         k_wedge : (B,) long — RSM index whose canonical wedge is carved.
 
         Returns
         -------
-        carved        : (B, 1, P, P, P)
-        target        : (B, 1, P, P, P)
+        carved        : (B, 1, C, C, C)
+        target        : (B, 1, C, C, C)
         cond          : (B, 1, dim)
-        valid_missing : (B, P, P, P) bool — supervise the Fourier loss here
-                        (fftshifted layout, matching the training loss).
+        valid_missing : (B, C, C, C) bool (fftshifted layout)
         """
-        if patches.dim() == 5:
-            patches = patches.squeeze(1)
-        patches = patches.to(self.device).float()
+        if v0.dim() == 5:
+            v0 = v0.squeeze(1)
+        v0 = v0.to(self.device).float()
+        if v1 is None:
+            v1 = v0
+        else:
+            if v1.dim() == 5:
+                v1 = v1.squeeze(1)
+            v1 = v1.to(self.device).float()
         k_src = k_src.to(self.device)
         k_wedge = k_wedge.to(self.device)
-        B = patches.shape[0]
+        B = v0.shape[0]
+        C = self.cube_size
 
-        R = random_so3(B, self.device, patches.dtype)
-        rotated = rotate_batch(patches, R, mode='bilinear')          # target (B,P,P,P)
+        # Same rotation for v0 and v1. The spherical mask keeps corners near-zero
+        # after rotation, so no center-crop buffer is needed.
+        R = random_so3(B, self.device, v0.dtype)
+        v0c = rotate_batch(v0, R, mode='bilinear')
+        v1c = rotate_batch(v1, R, mode='bilinear')
 
-        keep_canon = self.canonical_keep[k_wedge]                    # (B,P,P,P) bool (shifted)
-        carved = carve_shifted(rotated, keep_canon)                  # (B,P,P,P)
+        keep_canon = self.canonical_keep[k_wedge]                    # (B,C,C,C) bool (shifted)
+        carved = carve_shifted(v0c, keep_canon)                      # (B,C,C,C)
+        target = v1c                                                 # (B,C,C,C)
 
-        measured_rot = rotate_batch(self.measured_keep[k_src].float(), R,
-                                    mode='nearest') > 0.5            # (B,P,P,P) bool
+        # Analytical measured mask — avoids nearest-neighbour aliasing by
+        # rotating the RSM direction and goniometer axis then re-evaluating
+        # the closed-form condition, giving smooth wedge boundaries.
+        measured_rot = self._measured_mask_rotated(R, k_src)         # (B,C,C,C) bool (shifted)
         valid_missing = (~keep_canon) & measured_rot                 # carved AND ground-truth
 
         cond = self.cond[k_wedge]                                    # (B,1,dim)
-        return carved.unsqueeze(1), rotated.unsqueeze(1), cond, valid_missing
+        return carved.unsqueeze(1), target.unsqueeze(1), cond, valid_missing
