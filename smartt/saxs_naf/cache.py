@@ -101,7 +101,15 @@ def load_recon(
     """
     path = npy_path(cache_dir, name, params)
     if path.exists():
-        return np.load(path)
+        try:
+            arr = np.load(path)
+        except (ValueError, OSError):
+            # Corrupted file (e.g. saved as object dtype from a failed run).
+            # Return None so the caller recomputes and overwrites it.
+            return None
+        if arr.dtype == object:
+            return None
+        return arr
     return None
 
 

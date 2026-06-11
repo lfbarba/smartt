@@ -88,7 +88,7 @@ def split_holdout(dc, fraction: float = 0.1, seed: int = 42):
 def to_sh_coefficients(
     basis_or_array,
     ell_max: int = 8,
-    n_fit_dirs: int = 300,
+    coefficients: "np.ndarray | None" = None,
 ) -> np.ndarray:
     """Return ``(X, Y, Z, C)`` SH coefficients for any mumott basis or array.
 
@@ -97,16 +97,18 @@ def to_sh_coefficients(
     basis_or_array : ``np.ndarray`` or mumott basis-set instance.
         If a numpy array of shape ``(X, Y, Z, C)`` it is returned as-is
         (assumed already in the ``forward_quadrature`` SH convention).
-        If a mumott ``SphericalHarmonics`` basis: ``basis.coefficients`` is
-        returned directly (same convention, confirmed).
-        If a ``GaussianKernels`` or ``NearestNeighbor`` basis: the coefficients
-        are evaluated at ``n_fit_dirs`` Fibonacci directions and SH coefficients
-        are recovered by least-squares fitting.
+        If a mumott ``SphericalHarmonics`` basis: ``basis.get_spherical_harmonic_coefficients``
+        is called with ``coefficients`` (or ``basis.coefficients`` if omitted).
+        If a ``GaussianKernels`` or ``NearestNeighbor`` basis: ``coefficients`` must
+        be provided (pass ``result['x']`` from ``LBFGS.optimize()``); mumott's
+        native ``basis.get_spherical_harmonic_coefficients`` is used for the
+        conversion.
     ell_max : int
-        Target SH band-limit.  Only used for non-SH basis conversion.
-    n_fit_dirs : int
-        Number of Fibonacci directions used in the least-squares fit for
-        non-SH bases.  300 is sufficient for ell_max ≤ 8.
+        Target SH band-limit.
+    coefficients : ``(X, Y, Z, K)`` array, optional
+        Optimized basis coefficients.  Required for ``GaussianKernels`` and
+        ``NearestNeighbor``.  For ``SphericalHarmonics`` it defaults to
+        ``basis.coefficients``.
 
     Returns
     -------
@@ -117,40 +119,24 @@ def to_sh_coefficients(
 
     basis = basis_or_array
 
-    # SphericalHarmonics: coefficients are already in the right convention.
+    # SphericalHarmonics: delegate to mumott's own converter (handles truncation /
+    # zero-padding) using either the supplied coefficients or the live basis state.
     try:
         from mumott.methods.basis_sets import SphericalHarmonics
         if isinstance(basis, SphericalHarmonics):
-            return basis.coefficients.astype(np.float32)
+            coeffs = coefficients if coefficients is not None else basis.coefficients
+            return basis.get_spherical_harmonic_coefficients(coeffs, ell_max=ell_max).astype(np.float32)
     except ImportError:
         pass
 
-    # GaussianKernels / NearestNeighbor: evaluate at many directions, fit SH.
-    from mumott.core.probed_coordinates import ProbedCoordinates
-    from smartt.saxs_fbp import fibonacci_hemisphere
-    from .eval import evaluate_real_sh
-    import torch
-
-    dirs = fibonacci_hemisphere(n_fit_dirs, half_space="y")   # (N, 3)
-
-    pc = ProbedCoordinates()
-    pc.vector = dirs[:, np.newaxis, np.newaxis, :]             # (N, 1, 1, 3)
-    B_basis = basis._get_projection_matrix(pc)[:, 0, 0, :]    # (N, C_basis)
-
-    # RSM at each direction for every voxel: (X*Y*Z, N)
-    coeffs_flat = basis.coefficients.reshape(-1, basis.coefficients.shape[-1])
-    rsm_flat = (coeffs_flat @ B_basis.T).astype(np.float64)   # (X*Y*Z, N)
-
-    # SH evaluation matrix (N, C_sh)
-    B_sh = evaluate_real_sh(
-        torch.tensor(dirs, dtype=torch.float32), ell_max
-    ).numpy().astype(np.float64)
-
-    # Least-squares: B_sh @ sh_flat = rsm_flat.T  →  sh_flat (C_sh, X*Y*Z)
-    sh_flat, _, _, _ = np.linalg.lstsq(B_sh, rsm_flat.T, rcond=None)
-
-    X, Y, Z = basis.coefficients.shape[:3]
-    return sh_flat.T.reshape(X, Y, Z, -1).astype(np.float32)
+    # GaussianKernels / NearestNeighbor: coefficients must be supplied explicitly
+    # (the basis has no .coefficients attribute; they live in the ResidualCalculator).
+    if coefficients is None:
+        raise ValueError(
+            "GaussianKernels / NearestNeighbor: pass `coefficients=result['x']` "
+            "from LBFGS.optimize() to to_sh_coefficients()."
+        )
+    return basis.get_spherical_harmonic_coefficients(coefficients, ell_max=ell_max).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -161,8 +147,9 @@ def compute_ground_truth(
     combined_dc,
     gt_method: str = "sh",
     ell_max: int = 8,
-    n_iterations: int = 500,
-    device=None,
+    n_iterations: int = 20,
+    laplacian_weight: float = 1e-1,
+    maxcor: int = 5,
 ) -> np.ndarray:
     """Run a mumott reconstruction on the full combined DataContainer.
 
@@ -172,23 +159,50 @@ def compute_ground_truth(
     gt_method : ``'sh'`` (SphericalHarmonics + LBFGS) or ``'gk'``
         (GaussianKernels + LBFGS).
     ell_max : SH band-limit (used for ``'sh'`` method).
-    n_iterations : LBFGS iterations.
-    device : torch.device or None (auto).
+    n_iterations : LBFGS iterations.  LBFGS converges fast — 20 is typically
+        sufficient and matches the existing comparison notebook.
+    laplacian_weight : Weight for the Laplacian spatial regulariser (default
+        1e-1, same as the comparison notebook).
+    maxcor : Number of L-BFGS-B correction vectors (scipy ``maxcor``).
+
+        **Critical for large volumes**: scipy's L-BFGS-B Fortran code uses
+        32-bit integers for internal array size calculations.  For
+        ``n = X*Y*Z*C`` parameters, the work-array size is approximately
+        ``(2*maxcor + 5)*n``.  This overflows INT32 when
+        ``maxcor ≥ 9`` at n ≈ 99 M (the 141³ combined volume with C=45),
+        causing a **segmentation fault**.  The default ``maxcor=5`` keeps
+        the work array at ~11.9 GB, well below the overflow boundary.
+        Raise to 7 at most if you need faster convergence on smaller volumes.
 
     Returns
     -------
     ``(X, Y, Z, C)`` float32 SH coefficients.
     """
+    import math
     from mumott.methods.basis_sets import SphericalHarmonics, GaussianKernels
-    from mumott.methods.projectors import SAXSProjectorCUDA, SAXSProjector
+    from mumott.methods.projectors import SAXSProjector
     from mumott.methods.residual_calculators import GradientResidualCalculator
     from mumott.optimization.loss_functions import SquaredLoss
     from mumott.optimization.optimizers import LBFGS
+    from mumott.optimization.regularizers import Laplacian
 
-    try:
-        projector = SAXSProjectorCUDA(combined_dc.geometry)
-    except Exception:
-        projector = SAXSProjector(combined_dc.geometry)
+    # Guard: verify maxcor is safe before launching the expensive computation.
+    vol = combined_dc.geometry.volume_shape
+    n_params = int(vol[0]) * int(vol[1]) * int(vol[2]) * (ell_max + 1) ** 2 // 4 * 2 + (ell_max + 1)
+    # Simpler safe upper bound: use actual C derived from ell_max
+    n_coeffs = sum(2 * ell + 1 for ell in range(0, ell_max + 1, 2))
+    n_params = int(vol[0]) * int(vol[1]) * int(vol[2]) * n_coeffs
+    wa_size = (2 * maxcor + 5) * n_params
+    int32_max = 2 ** 31 - 1
+    if wa_size > int32_max:
+        safe_maxcor = int((int32_max / n_params - 5) / 2)
+        raise ValueError(
+            f"maxcor={maxcor} causes a 32-bit integer overflow in scipy L-BFGS-B "
+            f"(wa_size={wa_size:,} > INT32_MAX={int32_max:,}).  "
+            f"Use maxcor≤{safe_maxcor} for this volume/ell_max."
+        )
+
+    projector = SAXSProjector(combined_dc.geometry)
 
     if gt_method == "sh":
         basis = SphericalHarmonics(
@@ -208,10 +222,12 @@ def compute_ground_truth(
         projector=projector,
     )
     loss = SquaredLoss(residual_calculator=rc)
-    opt = LBFGS(loss, maxiter=n_iterations)
-    opt.optimize()
+    loss.add_regularizer("laplacian", Laplacian(), regularization_weight=laplacian_weight)
+    result = LBFGS(loss, maxiter=n_iterations, maxcor=maxcor).optimize()
 
-    return to_sh_coefficients(basis, ell_max=ell_max)
+    # Use the return value (authoritative flat array) and reshape to (X,Y,Z,C).
+    coeffs = result["x"].astype(np.float32)
+    return coeffs
 
 
 # ---------------------------------------------------------------------------
