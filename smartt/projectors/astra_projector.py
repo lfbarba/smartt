@@ -280,9 +280,8 @@ def _forward_project_single_gpu(volume_slice: torch.Tensor, vol_geom, proj_geom,
             0
         )
     )
-    # Transpose to ASTRA format (z, y, x) and make contiguous copy to avoid aliasing
-    vol_astra = cp.transpose(vol_cp, (2, 1, 0))
-    vol_astra = cp.ascontiguousarray(vol_astra).copy()  # Explicit copy to avoid memory aliasing
+    # Transpose to ASTRA format (z, y, x); ascontiguousarray already makes a fresh allocation.
+    vol_astra = cp.ascontiguousarray(cp.transpose(vol_cp, (2, 1, 0)))
     
     # Allocate output - ASTRA sinogram format is (det_rows, n_angles, det_cols)
     proj_shape_astra = (proj_shape[1], n_projections, proj_shape[0])

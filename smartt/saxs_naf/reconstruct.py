@@ -69,9 +69,17 @@ def _build_projector_pool(
     full_target: torch.Tensor,
     full_weights: torch.Tensor,
     device: torch.device,
+    ell_max: int,
 ) -> List[dict]:
-    """Partition projections into chunks; build one projector each (once)."""
+    """Partition projections into chunks; build one projector each (once).
+
+    The SH integration matrix ``Y_int`` (shape ``(N, M, C)``) is precomputed
+    once per chunk from the fixed probed coordinates and stored as a GPU
+    tensor.  During training each step uses a single ``torch.einsum`` instead
+    of re-running the per-step Python loop inside ``forward_quadrature``.
+    """
     from smartt.projectors import build_mumott_projector
+    from smartt.shutils.evaulate_sh import precompute_Y_int
 
     n = len(perm)
     pool: List[dict] = []
@@ -85,7 +93,11 @@ def _build_projector_pool(
         pool.append(
             {
                 "projector": build_mumott_projector(sub.geometry, device=device),
-                "pc": sub.geometry.probed_coordinates,
+                "Y_int": precompute_Y_int(
+                    sub.geometry.probed_coordinates,
+                    ell_max=ell_max,
+                    device=device,
+                ),
                 "target": full_target[idx],
                 "mask": full_weights[idx],
             }
@@ -197,8 +209,6 @@ def saxs_naf_reconstruction(
         ``encoding`` — human-readable description of the hash-grid levels.
     """
     import time as _time
-    from smartt.shutils.evaulate_sh import forward_quadrature
-
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if seed is not None:
@@ -223,7 +233,7 @@ def saxs_naf_reconstruction(
 
     # Initial projector pool.
     perm = np.random.permutation(n_proj)
-    pool = _build_projector_pool(dc, perm, batch_size, full_target, full_weights, device)
+    pool = _build_projector_pool(dc, perm, batch_size, full_target, full_weights, device, ell_max)
     n_chunks = len(pool)
 
     # Calibrate the cold-start c00 so the isotropic component matches the data scale.
@@ -232,7 +242,7 @@ def saxs_naf_reconstruction(
             ch = pool[0]
             coeffs = model()                      # c00 = softplus(bias) (=1), rest ~0
             spatial = ch["projector"](coeffs)
-            pred = forward_quadrature(ch["pc"], spatial, ell_max=ell_max)
+            pred = torch.einsum("nijc,nmc->nijm", spatial, ch["Y_int"])
             m = ch["mask"]
             pred_mean = float(pred[m].mean().clamp_min(1e-8))
             tgt_mean = float(full_target[full_weights].mean())
@@ -272,7 +282,7 @@ def saxs_naf_reconstruction(
         if step > 0 and reshuffle_every and step % reshuffle_every == 0:
             perm = np.random.permutation(n_proj)
             pool = _build_projector_pool(
-                dc, perm, batch_size, full_target, full_weights, device
+                dc, perm, batch_size, full_target, full_weights, device, ell_max
             )
             n_chunks = len(pool)
 
@@ -284,9 +294,9 @@ def saxs_naf_reconstruction(
             ell_mask = ell_mask.to(device)
 
         optimizer.zero_grad(set_to_none=True)
-        coeffs = model(level_weights=level_w, ell_mask=ell_mask)     # (X,Y,Z,C)
-        spatial = ch["projector"](coeffs)                            # (I,J,K,C)
-        pred = forward_quadrature(ch["pc"], spatial, ell_max=ell_max)  # (I,J,K,M)
+        coeffs = model(level_weights=level_w, ell_mask=ell_mask)           # (X,Y,Z,C)
+        spatial = ch["projector"](coeffs)                                  # (I,J,K,C)
+        pred = torch.einsum("nijc,nmc->nijm", spatial, ch["Y_int"])        # (I,J,K,M)
 
         m = ch["mask"]
         data_loss = torch.nn.functional.mse_loss(pred[m], ch["target"][m])

@@ -6,11 +6,17 @@ orthogonal slices in reciprocal space, corresponding to different projection
 angles in tomographic reconstruction.
 """
 
+from __future__ import annotations
+
 import numpy as np
 import torch
 from typing import Optional, Tuple
 from scipy.special import lpmv
-from e3nn import o3
+
+# NOTE: e3nn is imported lazily inside the functions that use it (Wigner-D /
+# Irreps). Importing it at module load can conflict with some torch builds
+# (a `wait_tensor` dispatch-kernel registration error) and it is only needed by
+# SphericalHarmonicSliceProjector — not by build_mumott_projector / saxs_naf.
 
 
 def _compute_rotation_worker(proj_vec: torch.Tensor, ell_max: int) -> torch.Tensor:
@@ -68,6 +74,8 @@ def _compute_rotation_worker(proj_vec: torch.Tensor, ell_max: int) -> torch.Tens
         # Rodrigues formula: R = I + sin(θ)K + (1-cos(θ))K²
         R = I + sin_theta * K + (1 - cos_theta) * torch.matmul(K, K)
     
+    from e3nn import o3  # lazy import (see module header)
+
     # Convert to Euler angles
     alpha, beta, gamma = o3.matrix_to_angles(R)
     
@@ -163,6 +171,8 @@ def _worker_process_batch(start_idx: int, end_idx: int, proj_vecs: torch.Tensor,
         # Rodrigues formula: R = I + sin(θ)K + (1-cos(θ))K²
         R = I + sin_theta * K + (1 - cos_theta) * torch.matmul(K, K)
     
+    from e3nn import o3  # lazy import (see module header)
+
     # Convert to Euler angles
     alpha, beta, gamma = o3.matrix_to_angles(R)
     
@@ -236,6 +246,7 @@ class SphericalHarmonicSliceProjector:
         
     def _build_irreps(self) -> o3.Irreps:
         """Build e3nn Irreps string for even-ℓ only."""
+        from e3nn import o3  # lazy import (see module header)
         irrep_list = []
         for ell in range(0, self.ell_max + 1, 2):
             parity = 'e' if ell % 2 == 0 else 'o'
@@ -484,6 +495,8 @@ class SphericalHarmonicSliceProjector:
         # Get rotation matrix (3x3)
         R = self._rotation_matrix_to_align_vector(proj_vec)
         
+        from e3nn import o3  # lazy import (see module header)
+
         # Convert to Euler angles
         R_cpu = R.cpu() if R.is_cuda else R
         alpha, beta, gamma = o3.matrix_to_angles(R_cpu)

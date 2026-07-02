@@ -65,9 +65,9 @@ def coeffs_to_rsm_volumes(
     coeffs: torch.Tensor, directions: np.ndarray, ell_max: int
 ) -> torch.Tensor:
     """``(X, Y, Z, C)`` coefficients → ``(K, X, Y, Z)`` directional volumes."""
-    dirs = torch.as_tensor(directions, dtype=coeffs.dtype, device=coeffs.device)
+    dirs = torch.from_numpy(directions).float()
     B = evaluate_real_sh(dirs, ell_max)                    # (K, C)
-    return torch.einsum("xyzc,kc->kxyz", coeffs, B)
+    return torch.einsum("xyzc,kc->kxyz", torch.from_numpy(coeffs).float(), B)
 
 
 def relative_anisotropy(rsm_volumes: torch.Tensor, sphere_mask=None) -> torch.Tensor:
@@ -118,9 +118,10 @@ def evaluate_models(
     sphere_mask = None
     d = None
     for name, coeffs in models.items():
-        vols = coeffs_to_rsm_volumes(coeffs.float(), y_directions, ell_max)  # (K,X,Y,Z)
+        vols = coeffs_to_rsm_volumes(coeffs, y_directions, ell_max)  # (K,X,Y,Z)
         cropped, sphere_mask, d = spherical_crop(vols.cpu(), cube_size=cube_size)
-        volumes[name] = cropped
+        # volumes[name] = cropped
+        volumes[name] = vols.cpu()
 
     out = {
         "y_directions": y_directions,
@@ -153,7 +154,7 @@ def plot_rsm_direction(result: Dict, k: int, axis: str = "z", slice_index=None):
         slice_index = d // 2
 
     ref = volumes[names[0]][k].numpy()
-    lo, hi = np.percentile(ref[sphere_mask], [2, 98])
+    lo, hi = np.percentile(ref, [2, 98])
 
     fig, axes = plt.subplots(1, len(names), figsize=(4 * len(names), 4), squeeze=False)
     for col, name in enumerate(names):

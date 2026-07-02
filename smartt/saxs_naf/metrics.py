@@ -226,13 +226,59 @@ def compute_ground_truth(
     result = LBFGS(loss, maxiter=n_iterations, maxcor=maxcor).optimize()
 
     # Use the return value (authoritative flat array) and reshape to (X,Y,Z,C).
-    coeffs = result["x"].astype(np.float32)
-    return coeffs
+    # GaussianKernels stores K=50 kernel weights; convert to SH before returning
+    # so the output is always (X,Y,Z,C) SH coefficients regardless of gt_method.
+    if gt_method == "gk":
+        return to_sh_coefficients(basis, ell_max=ell_max, coefficients=result["x"])
+    return result["x"].astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _resample_coeffs(coeffs: np.ndarray, target_shape: tuple) -> np.ndarray:
+    """Trilinearly resample ``(X2,Y2,Z2,C)`` to ``(X1,Y1,Z1,C)``."""
+    from scipy.ndimage import zoom
+    X2, Y2, Z2 = coeffs.shape[:3]
+    X1, Y1, Z1 = target_shape
+    if (X2, Y2, Z2) == (X1, Y1, Z1):
+        return coeffs
+    factors = (X1 / X2, Y1 / Y2, Z1 / Z2, 1.0)
+    return zoom(coeffs.astype(np.float64), factors, order=1).astype(np.float32)
+
+
+def fbp_to_sh(
+    reconstruction: np.ndarray,
+    y_directions: np.ndarray,
+    ell_max: int = 8,
+) -> np.ndarray:
+    """Convert FBP directional output ``(K,X,Y,Z)`` to SH coefficients ``(X,Y,Z,C)``.
+
+    Parameters
+    ----------
+    reconstruction : ``(K, X, Y, Z)`` float32 array — output of
+        :func:`~smartt.saxs_fbp.reconstruction.saxs_fbp_reconstruction`.
+    y_directions : ``(K, 3)`` float64 array — unit q-directions returned by
+        :func:`~smartt.saxs_fbp.reconstruction.saxs_fbp_reconstruction`.
+    ell_max : SH band-limit.
+
+    Returns
+    -------
+    ``(X, Y, Z, C)`` float32 SH coefficient array.
+    """
+    import torch
+    from .eval import evaluate_real_sh
+
+    K, X, Y, Z = reconstruction.shape
+    B = evaluate_real_sh(
+        torch.tensor(y_directions, dtype=torch.float32), ell_max
+    ).numpy()                               # (K, C)
+    B_pinv = np.linalg.pinv(B)             # (C, K)
+    recon_flat = reconstruction.reshape(K, -1).astype(np.float32)
+    coeffs = (B_pinv @ recon_flat).reshape(B_pinv.shape[0], X, Y, Z).transpose(1, 2, 3, 0)
+    return coeffs.astype(np.float32)
+
 
 def _rsm_volumes(coeffs: np.ndarray, directions: np.ndarray, ell_max: int) -> np.ndarray:
     """``(X,Y,Z,C)`` → ``(K,X,Y,Z)`` directional RSM volumes (numpy)."""
@@ -386,8 +432,15 @@ def compute_metrics(
     # --- per-method metrics ---
     results: Dict[str, Dict] = {}
 
+    gt_spatial = ground_truth.shape[:3]
+
     for name, coeffs in reconstructions.items():
         coeffs = coeffs.astype(np.float32)
+        # Keep a copy in the native geometry for held-out re-projection, which
+        # must match the projector built from held_out_dc.geometry.
+        coeffs_native = coeffs
+        if coeffs.shape[:3] != gt_spatial:
+            coeffs = _resample_coeffs(coeffs, gt_spatial)
         m: Dict = {}
 
         # RSM volumes
@@ -468,8 +521,8 @@ def compute_metrics(
         except Exception:
             m["ssim"] = float("nan")
 
-        # Held-out projection consistency
-        m["holdout_nrmse"] = _holdout_nrmse(coeffs, held_out_dc, ell_max, device)
+        # Held-out projection consistency (native geometry — not resampled)
+        m["holdout_nrmse"] = _holdout_nrmse(coeffs_native, held_out_dc, ell_max, device)
 
         results[name] = m
 

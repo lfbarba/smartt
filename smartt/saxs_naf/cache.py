@@ -104,13 +104,87 @@ def load_recon(
         try:
             arr = np.load(path)
         except (ValueError, OSError):
-            # Corrupted file (e.g. saved as object dtype from a failed run).
-            # Return None so the caller recomputes and overwrites it.
             return None
         if arr.dtype == object:
             return None
+        # Validate SH coefficient count against ell_max when available.
+        ell_max = params.get("ell_max")
+        if ell_max is not None and arr.ndim == 4:
+            expected_c = sum(2 * ell + 1 for ell in range(0, int(ell_max) + 1, 2))
+            if arr.shape[-1] != expected_c:
+                import warnings
+                warnings.warn(
+                    f"Stale cache {path.name}: has {arr.shape[-1]} coefficients "
+                    f"but ell_max={ell_max} expects {expected_c}. Recomputing.",
+                    stacklevel=2,
+                )
+                return None
         return arr
     return None
+
+
+def save_metrics(
+    cache_dir,
+    dc_type: str,
+    metrics: dict,
+    params: Dict[str, Any],
+) -> "Path":
+    """Persist the output of :func:`~smartt.saxs_naf.metrics.compute_metrics`.
+
+    Parameters
+    ----------
+    cache_dir : path-like
+    dc_type : str
+        Partition label (e.g. ``'b411R'``), used as part of the filename.
+    metrics : dict
+        ``method → {metric_name → scalar_or_array}`` as returned by
+        :func:`compute_metrics`.
+    params : dict
+        All parameters that determine the metric values (reconstruction params,
+        ell_max, K, half_space, …).  Changes to any param produce a new cache
+        file; the old one is left on disk.
+
+    Returns
+    -------
+    Path to the saved ``.pkl`` file.
+    """
+    import pickle
+    path = Path(cache_dir) / f"metrics_{dc_type}_{_param_hash(params)}.pkl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as fh:
+        pickle.dump(metrics, fh, protocol=4)
+    sidecar = path.with_suffix(".json")
+    sidecar.write_text(json.dumps(params, indent=2, default=str))
+    return path
+
+
+def load_metrics(
+    cache_dir,
+    dc_type: str,
+    params: Dict[str, Any],
+) -> "Optional[dict]":
+    """Load cached metrics if present, else return ``None``.
+
+    Parameters
+    ----------
+    cache_dir : path-like
+    dc_type : str
+    params : dict
+        Must be identical to the dict passed to :func:`save_metrics`.
+
+    Returns
+    -------
+    The metrics dict, or ``None`` if no matching cache file exists.
+    """
+    import pickle
+    path = Path(cache_dir) / f"metrics_{dc_type}_{_param_hash(params)}.pkl"
+    if not path.exists():
+        return None
+    try:
+        with open(path, "rb") as fh:
+            return pickle.load(fh)
+    except Exception:
+        return None
 
 
 def list_cache(cache_dir) -> list[dict]:
