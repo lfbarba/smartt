@@ -123,6 +123,97 @@ def load_recon(
     return None
 
 
+def model_path(cache_dir, name: str, params: Dict[str, Any]) -> Path:
+    """Full path to the ``.model.pt`` checkpoint for a given name+params.
+
+    Uses a ``.model.pt`` extension (not ``.pt``) so the model checkpoint and its
+    sidecar never collide with the ``.npy``/``.json`` pair written by
+    :func:`save_recon` for the same name+params.
+    """
+    return Path(cache_dir) / f"{cache_stem(name, params)}.model.pt"
+
+
+def save_model(
+    cache_dir,
+    name: str,
+    model,
+    params: Dict[str, Any],
+) -> Path:
+    """Persist a trained :class:`~smartt.saxs_naf.model.SaxsNafField`.
+
+    Stores a checkpoint holding the model's construction ``config`` (from
+    ``model.get_config()``) and ``state_dict``, so :func:`load_model` can rebuild
+    an identical architecture and restore the weights — enabling super-resolution
+    querying of the field long after the training run.
+
+    Parameters
+    ----------
+    cache_dir : path-like
+    name : str
+        Logical name, matching the one used with :func:`save_recon`.
+    model : SaxsNafField
+        Must expose ``get_config()`` and ``state_dict()``.
+    params : dict
+        Same parameter dict used for the reconstruction (drives the hash).
+
+    Returns
+    -------
+    Path to the saved ``.model.pt`` file.
+    """
+    import torch
+    path = model_path(cache_dir, name, params)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {"config": model.get_config(), "state_dict": model.state_dict()}, path
+    )
+    sidecar = path.with_suffix(".json")   # -> {stem}.model.json
+    sidecar.write_text(json.dumps(params, indent=2, default=str))
+    return path
+
+
+def load_model(
+    cache_dir,
+    name: str,
+    params: Dict[str, Any],
+    device=None,
+):
+    """Load a cached :class:`~smartt.saxs_naf.model.SaxsNafField`, else ``None``.
+
+    Rebuilds the field from the stored ``config`` and loads its ``state_dict``.
+
+    Parameters
+    ----------
+    cache_dir : path-like
+    name : str
+    params : dict
+        Must be identical to the dict passed to :func:`save_model`.
+    device : torch.device or str, optional
+        If given, the loaded model is moved to this device (and the checkpoint is
+        mapped there); defaults to CPU.
+
+    Returns
+    -------
+    A ``SaxsNafField`` in eval-ready state, or ``None`` if not cached.
+    """
+    import torch
+    from .model import SaxsNafField
+
+    path = model_path(cache_dir, name, params)
+    if not path.exists():
+        return None
+    try:
+        ckpt = torch.load(
+            path, map_location=device or "cpu", weights_only=False
+        )
+    except (ValueError, OSError, RuntimeError):
+        return None
+    model = SaxsNafField(**ckpt["config"])
+    model.load_state_dict(ckpt["state_dict"])
+    if device is not None:
+        model = model.to(device)
+    return model
+
+
 def save_metrics(
     cache_dir,
     dc_type: str,
@@ -185,6 +276,217 @@ def load_metrics(
             return pickle.load(fh)
     except Exception:
         return None
+
+
+def project_params(row: Dict[str, Any], target: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``{k: row[k]}`` for every key that ``target`` already defines.
+
+    The canonical way to pull a selected sidecar back into a notebook param dict:
+    a sidecar is a *superset* of the notebook's param dict (it also carries
+    ``method``/``dataset``/``dc_type``/``holdout_*``), so we project onto the
+    keys the target already owns and leave everything else alone.
+
+    >>> project_params(sidecar, NAF_PARAMS)   # -> only the 6 NAF keys
+    """
+    return {k: row[k] for k in target if k in row}
+
+
+# Categories whose reconstructions carry no tunable parameters — nothing to choose.
+_CHOOSER_SKIP = {"fbp"}
+# Columns that are bookkeeping, not selectable hyper-parameters.
+_CHOOSER_META_COLS = {"name", "hash", "shape", "mtime", "dataset", "method"}
+
+
+def _entry_category(entry: Dict[str, Any]) -> str:
+    """Map a cache entry to its chooser category.
+
+    ``ground_truth`` sidecars carry no ``method`` field (they are keyed on
+    ``gt_method``); everything else is grouped by its ``method`` string.
+    """
+    params = entry.get("params") or {}
+    if entry.get("name") == "ground_truth" or "method" not in params:
+        return "ground_truth"
+    return params.get("method", entry.get("name", "?"))
+
+
+def cache_table(cache_dir) -> "Any":
+    """Return a :class:`pandas.DataFrame` summarising every cached reconstruction.
+
+    One row per ``.npy``/sidecar pair.  Columns are ``name``, ``hash``, ``shape``,
+    ``mtime`` followed by the union of all sidecar parameter keys.  Intended for
+    eyeballing what has already been computed in a ``cache_dir`` so param sets can
+    be reloaded instead of retyped (see :class:`CacheChooser`).
+    """
+    import pandas as pd
+
+    cache_dir = Path(cache_dir)
+    rows = []
+    for entry in list_cache(cache_dir):
+        row: Dict[str, Any] = {
+            "name": entry["name"],
+            "hash": entry["hash"],
+            "shape": str(entry.get("shape")),
+            "category": _entry_category(entry),
+        }
+        npy = cache_dir / f"{entry['name']}_{entry['hash']}.npy"
+        try:
+            row["mtime"] = int(npy.stat().st_mtime)
+        except OSError:
+            row["mtime"] = None
+        row.update(entry.get("params") or {})
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    lead = ["category", "name", "hash", "shape", "mtime"]
+    rest = [c for c in df.columns if c not in lead]
+    return df[[c for c in lead if c in df.columns] + rest]
+
+
+class CacheChooser:
+    """Interactive picker over a reconstruction ``cache_dir``.
+
+    Renders one grid per method category (``mumott_sh``, ``mumott_gk``, ``naf``,
+    plus a ``ground_truth`` grid), each with a row-dropdown; ``fbp`` is skipped
+    (no tunable params).  A top-level ``dc_type`` dropdown filters every
+    method grid so the shared keys (``ell_max``/``holdout_*``/``dc_type``) can
+    never disagree across categories.  Selecting *none* for a category leaves the
+    notebook's own default in place.
+
+    Clicking **Load** populates :attr:`selection` — a ``{category: params}`` dict
+    holding the full sidecar dict for each chosen row — and prints it.  The
+    consuming cell must be re-run afterwards to pick up the new params.
+
+    Notebook usage::
+
+        chooser = CacheChooser(cache_dir); chooser        # renders the grids
+        # ... click Load ...
+        sel = chooser.selection
+        if 'naf' in sel:
+            NAF_PARAMS.update(project_params(sel['naf'], NAF_PARAMS))
+    """
+
+    #: display order for the category grids
+    ORDER = ["mumott_sh", "mumott_gk", "naf", "ground_truth"]
+
+    def __init__(self, cache_dir):
+        self.cache_dir = Path(cache_dir)
+        self.df = cache_table(self.cache_dir)
+        self.selection: Dict[str, Dict[str, Any]] = {}
+        self._build()
+
+    @property
+    def dc_type(self):
+        """The currently-selected ``dc_type`` (``None`` if the cache is empty)."""
+        return getattr(self, "_dc_dd", None) and self._dc_dd.value
+
+    # -- construction -----------------------------------------------------
+    def _dc_types(self):
+        if self.df.empty or "dc_type" not in self.df:
+            return []
+        vals = [v for v in self.df["dc_type"].dropna().unique().tolist()]
+        return sorted(vals)
+
+    def _build(self):
+        import ipywidgets as widgets
+
+        if self.df.empty:
+            self._box = widgets.HTML(
+                f"<i>Cache directory {self.cache_dir} is empty.</i>"
+            )
+            return
+
+        dc_types = self._dc_types()
+        self._dc_dd = widgets.Dropdown(
+            options=dc_types, value=dc_types[0] if dc_types else None,
+            description="dc_type:", style={"description_width": "initial"},
+        )
+        self._dc_dd.observe(self._on_dc_change, names="value")
+
+        self._grids_box = widgets.VBox([])
+        self._load_btn = widgets.Button(
+            description="Load", button_style="primary", icon="download"
+        )
+        self._load_btn.on_click(self._on_load)
+        self._out = widgets.Output()
+        self._dropdowns: Dict[str, "widgets.Dropdown"] = {}
+
+        self._refresh_grids()
+        self._box = widgets.VBox(
+            [self._dc_dd, self._grids_box, self._load_btn, self._out]
+        )
+
+    def _row_label(self, sub, idx):
+        """Compact one-line summary of a row: hash + the columns that vary."""
+        varying = [
+            c for c in sub.columns
+            if c not in _CHOOSER_META_COLS and c not in ("category", "dc_type")
+            and sub[c].nunique(dropna=False) > 1
+        ]
+        row = sub.loc[idx]
+        parts = [f"{c}={row[c]}" for c in varying]
+        return f"{row['hash']}  " + " ".join(parts) if parts else f"{row['hash']}"
+
+    def _refresh_grids(self):
+        import ipywidgets as widgets
+        from IPython.display import display
+
+        dc = self._dc_dd.value
+        boxes = []
+        self._dropdowns = {}
+        for cat in self.ORDER:
+            sub = self.df[self.df["category"] == cat]
+            # GT has no dc_type; every other category filters to the selected one.
+            if cat != "ground_truth" and "dc_type" in sub:
+                sub = sub[sub["dc_type"] == dc]
+            sub = sub.dropna(axis=1, how="all")
+            if sub.empty:
+                continue
+            options = [("— none —", None)] + [
+                (self._row_label(sub, i), sub.loc[i, "hash"]) for i in sub.index
+            ]
+            dd = widgets.Dropdown(
+                options=options, value=None, description=f"{cat}:",
+                style={"description_width": "initial"},
+                layout=widgets.Layout(width="auto"),
+            )
+            self._dropdowns[cat] = dd
+            grid = widgets.Output()
+            with grid:
+                cols = [c for c in sub.columns if c not in ("category", "mtime")]
+                display(sub[cols].reset_index(drop=True))
+            boxes.append(widgets.VBox([widgets.HTML(f"<b>{cat}</b>"), grid, dd]))
+        self._grids_box.children = boxes
+
+    # -- callbacks --------------------------------------------------------
+    def _on_dc_change(self, _change):
+        self._refresh_grids()
+
+    def _params_for_hash(self, h):
+        # Read the raw sidecar rather than the DataFrame row: pandas coerces
+        # mixed columns to float (n_iterations -> 2000.0), which would re-hash
+        # differently than the original int and turn a cache hit into a silent
+        # recompute.  The sidecar preserves the exact original types.
+        row = self.df[self.df["hash"] == h].iloc[0]
+        sidecar = self.cache_dir / f"{row['name']}_{h}.json"
+        return json.loads(sidecar.read_text())
+
+    def _on_load(self, _btn):
+        self.selection = {}
+        for cat, dd in self._dropdowns.items():
+            if dd.value is not None:
+                self.selection[cat] = self._params_for_hash(dd.value)
+        self._out.clear_output()
+        with self._out:
+            if not self.selection:
+                print("No rows selected — notebook defaults unchanged.")
+            for cat, params in self.selection.items():
+                print(f"[{cat}] {params}")
+
+    def _ipython_display_(self):
+        from IPython.display import display
+        display(self._box)
 
 
 def list_cache(cache_dir) -> list[dict]:
