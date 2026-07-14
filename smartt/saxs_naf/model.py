@@ -86,6 +86,24 @@ class SaxsNafField(nn.Module):
         self.lm_list = _generate_lm_list(ell_max)
         self.num_coeffs = len(self.lm_list)
 
+        # Constructor arguments captured verbatim (max_resolution/table_size may
+        # be None here; the same defaulting logic re-runs identically on reload),
+        # so a saved checkpoint can rebuild an identical architecture.  See
+        # :func:`smartt.saxs_naf.cache.save_model`.
+        self._config = dict(
+            volume_shape=self.volume_shape,
+            ell_max=ell_max,
+            n_levels=n_levels,
+            n_features_per_level=n_features_per_level,
+            base_resolution=base_resolution,
+            max_resolution=max_resolution,
+            table_size=table_size,
+            hidden_dim=hidden_dim,
+            n_hidden_layers=n_hidden_layers,
+            c00_init=c00_init,
+            per_l_scale_power=per_l_scale_power,
+        )
+
         if max_resolution is None:
             max_resolution = max(self.volume_shape)
 
@@ -142,9 +160,37 @@ class SaxsNafField(nn.Module):
         coords = (idx - centres) / extent + 0.5
         return coords
 
+    def get_config(self) -> dict:
+        """Constructor kwargs needed to rebuild an identical (untrained) field."""
+        return dict(self._config)
+
     def set_c00_init(self, value: float) -> None:
         """Reset the cold-start ``c00`` bias from a data-derived mean."""
         self.head.bias.data[0] = _softplus_inv(value)
+
+    def forward_coords(
+        self,
+        coords: torch.Tensor,
+        level_weights: Optional[torch.Tensor] = None,
+        ell_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Evaluate the field at arbitrary ``(..., 3)`` coords in ``[0, 1]``.
+
+        Returns ``(..., C)`` SH coefficients (c₀₀ passed through softplus).  This
+        is the coordinate-driven core shared by :meth:`forward` (native grid) and
+        :meth:`sample_super_resolution` (denser grid).
+        """
+        feats = self.encoding(coords, level_weights=level_weights)
+        raw = self.head(self.trunk(feats))               # (..., C)
+        scaled = raw * self.per_l_scale                  # commensurate channels
+
+        # c00 ≥ 0 via softplus; higher orders linear.
+        c00 = F.softplus(scaled[..., :1])
+        coeffs = torch.cat([c00, scaled[..., 1:]], dim=-1)
+
+        if ell_mask is not None:
+            coeffs = coeffs * ell_mask
+        return coeffs
 
     def forward(
         self,
@@ -158,18 +204,52 @@ class SaxsNafField(nn.Module):
         level_weights : optional ``(n_levels,)`` spatial-annealing weights.
         ell_mask : optional ``(C,)`` angular-annealing visibility in ``[0, 1]``.
         """
-        feats = self.encoding(self.grid_coords, level_weights=level_weights)
-        raw = self.head(self.trunk(feats))               # (N, C)
-        scaled = raw * self.per_l_scale                  # commensurate channels
-
-        # c00 ≥ 0 via softplus; higher orders linear.
-        c00 = F.softplus(scaled[..., :1])
-        coeffs = torch.cat([c00, scaled[..., 1:]], dim=-1)
-
-        if ell_mask is not None:
-            coeffs = coeffs * ell_mask
-
+        coeffs = self.forward_coords(
+            self.grid_coords, level_weights=level_weights, ell_mask=ell_mask
+        )
         return coeffs.reshape(*self.volume_shape, self.num_coeffs)
+
+    def super_resolution_coords(
+        self, factor: float
+    ) -> Tuple[torch.Tensor, Tuple[int, int, int]]:
+        """``factor×`` denser grid coords over the SAME physical ``[0, 1]`` domain.
+
+        The continuous domain is identical to the native grid built in
+        :meth:`_build_grid_coords` (voxel-index range ``[0, n-1]`` per axis,
+        centred and divided by the longest-axis extent).  We simply sample it on
+        ``round(factor * n)`` points per axis instead of ``n``, so the corner
+        samples coincide with the native grid corners.  Returns the flattened
+        ``(M, 3)`` coords and the target ``(X', Y', Z')`` shape.
+        """
+        target = tuple(int(round(n * factor)) for n in self.volume_shape)
+        centres = [(n - 1) / 2.0 for n in self.volume_shape]
+        extent = float(max(self.volume_shape) - 1) if max(self.volume_shape) > 1 else 1.0
+        axes = []
+        for n, tn, c in zip(self.volume_shape, target, centres):
+            pos = torch.linspace(0.0, float(n - 1), tn, dtype=torch.float32)
+            axes.append((pos - c) / extent + 0.5)
+        gx, gy, gz = torch.meshgrid(*axes, indexing="ij")
+        coords = torch.stack([gx, gy, gz], dim=-1).reshape(-1, 3)
+        return coords, target
+
+    @torch.no_grad()
+    def sample_super_resolution(
+        self, factor: float = 2.0, chunk_size: int = 1 << 18
+    ) -> torch.Tensor:
+        """Query the trained field at ``factor×`` resolution → ``(X', Y', Z', C)``.
+
+        Evaluates the full SH field (no annealing masks) on a denser grid.
+        Coordinates are streamed in chunks of ``chunk_size`` points to bound peak
+        memory (a 4× grid over a 66³ volume is ~18 M points).  Returned on CPU.
+        """
+        device = self.grid_coords.device
+        coords, target = self.super_resolution_coords(factor)
+        coords = coords.to(device)
+        out = torch.empty(coords.shape[0], self.num_coeffs, dtype=torch.float32)
+        for start in range(0, coords.shape[0], chunk_size):
+            chunk = coords[start : start + chunk_size]
+            out[start : start + chunk_size] = self.forward_coords(chunk).cpu()
+        return out.reshape(*target, self.num_coeffs)
 
     def sh_regularization(self, coeffs: torch.Tensor) -> torch.Tensor:
         """ℓ(ℓ+1)-weighted energy of the coefficient field (scalar)."""

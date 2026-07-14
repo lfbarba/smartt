@@ -291,6 +291,25 @@ def project_params(row: Dict[str, Any], target: Dict[str, Any]) -> Dict[str, Any
     return {k: row[k] for k in target if k in row}
 
 
+def load_selected(cache_dir, sidecar: Dict[str, Any]) -> Optional[np.ndarray]:
+    """Load the exact reconstruction a chooser row points at.
+
+    ``sidecar`` is a full sidecar param dict — e.g. an entry of
+    :attr:`CacheChooser.selection`.  It carries ``method``/``dataset``/``dc_type``
+    alongside the hyper-parameters, so it alone determines both the file *name*
+    and the content *hash*.  Loading with it verbatim guarantees a cache hit.
+
+    Prefer this over merging a sidecar into a notebook default dict and rebuilding
+    the params: the merge silently keeps default keys the sidecar never had (an
+    older sidecar lacking ``holdout_*`` is the canonical case), and those extra
+    keys change the hash into a miss even though the .npy is right there on disk.
+
+    Returns the ``(X, Y, Z, C)`` array, or ``None`` if the file is absent.
+    """
+    name = f"{sidecar['method']}_{sidecar['dataset']}_{sidecar['dc_type']}"
+    return load_recon(cache_dir, name, sidecar)
+
+
 # Categories whose reconstructions carry no tunable parameters — nothing to choose.
 _CHOOSER_SKIP = {"fbp"}
 # Columns that are bookkeeping, not selectable hyper-parameters.

@@ -12,7 +12,15 @@ from .hash_encoding import MultiResolutionHashEncoding, GridLevel
 from .model import SaxsNafField
 from .schedule import Annealer
 from .reconstruct import saxs_naf_reconstruction
-from .cache import save_recon, load_recon, list_cache, save_metrics, load_metrics
+from .cache import (
+    save_recon,
+    load_recon,
+    list_cache,
+    save_metrics,
+    load_metrics,
+    save_model,
+    load_model,
+)
 from .metrics import (
     split_holdout,
     to_sh_coefficients,
@@ -40,6 +48,8 @@ __all__ = [
     "list_cache",
     "save_metrics",
     "load_metrics",
+    "save_model",
+    "load_model",
     "split_holdout",
     "to_sh_coefficients",
     "fbp_to_sh",

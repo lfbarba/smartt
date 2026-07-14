@@ -156,7 +156,7 @@ def plot_rsm_direction(result: Dict, k: int, axis: str = "z", slice_index=None):
     ref = volumes[names[0]][k].numpy()
     lo, hi = np.percentile(ref, [2, 98])
 
-    fig, axes = plt.subplots(1, len(names), figsize=(4 * len(names), 4), squeeze=False)
+    fig, axes = plt.subplots(1, len(names), figsize=(6 * len(names), 6), squeeze=False)
     for col, name in enumerate(names):
         vol = volumes[name][k].numpy()
         sl = {"x": vol[slice_index], "y": vol[:, slice_index], "z": vol[:, :, slice_index]}[axis]

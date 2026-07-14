@@ -18,14 +18,24 @@ from .b411 import B411DataContainer
 from .frogbone import FrogboneDataContainer
 from .zenodo import ZenodoDataContainer
 from .fiber_synthetic import FiberSyntheticDataContainer
+from .fiber_synthetic_full import FiberSyntheticFullDataContainer
 from .synthetic_b411 import SyntheticB411DataContainer
+from .nielsen_synthetic import (
+    NielsenMDataContainer,
+    NielsenTDataContainer,
+    NielsenMammothDataContainer,
+)
 
 REGISTRY: dict = {
     "b411":     B411DataContainer,
     "zenodo":   ZenodoDataContainer,
     "frogbone": FrogboneDataContainer,
     "fiber-synthetic": FiberSyntheticDataContainer,
+    "fiber-synthetic-full": FiberSyntheticFullDataContainer,
     "synthetic-b411": SyntheticB411DataContainer,
+    "nielsen-m": NielsenMDataContainer,
+    "nielsen-t": NielsenTDataContainer,
+    "nielsen-mammoth": NielsenMammothDataContainer,
 }
 
 
@@ -44,7 +54,11 @@ __all__ = [
     "ZenodoDataContainer",
     "FrogboneDataContainer",
     "FiberSyntheticDataContainer",
+    "FiberSyntheticFullDataContainer",
     "SyntheticB411DataContainer",
+    "NielsenMDataContainer",
+    "NielsenTDataContainer",
+    "NielsenMammothDataContainer",
     "REGISTRY",
     "get_dataset",
 ]
