@@ -146,6 +146,13 @@ class SaxsNafField(nn.Module):
         # Precompute normalised, isotropic grid coordinates in [0, 1].
         self.register_buffer("grid_coords", self._build_grid_coords())
 
+        # Global output rescale (buffer ⇒ persists through state_dict save/load).
+        # Training against a normalised target (see ``normalize_target`` in
+        # ``saxs_naf_reconstruction``) leaves this at 1.0 throughout; it is set
+        # once, post-training, so the field natively emits physical-unit
+        # coefficients for any later caller (super-resolution, checkpoint reload).
+        self.register_buffer("output_scale", torch.tensor(1.0))
+
     def _build_grid_coords(self) -> torch.Tensor:
         """``(X*Y*Z, 3)`` coords in ``[0, 1]``, isotropic (cubic voxels)."""
         X, Y, Z = self.volume_shape
@@ -167,6 +174,10 @@ class SaxsNafField(nn.Module):
     def set_c00_init(self, value: float) -> None:
         """Reset the cold-start ``c00`` bias from a data-derived mean."""
         self.head.bias.data[0] = _softplus_inv(value)
+
+    def set_output_scale(self, value: float) -> None:
+        """Set the global post-hoc output rescale (see ``output_scale``)."""
+        self.output_scale.fill_(float(value))
 
     def forward_coords(
         self,
@@ -190,7 +201,7 @@ class SaxsNafField(nn.Module):
 
         if ell_mask is not None:
             coeffs = coeffs * ell_mask
-        return coeffs
+        return coeffs * self.output_scale
 
     def forward(
         self,

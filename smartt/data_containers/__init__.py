@@ -25,6 +25,10 @@ from .nielsen_synthetic import (
     NielsenTDataContainer,
     NielsenMammothDataContainer,
 )
+from .cf_peek import CfPeekDataContainer
+from .auditory_ossicle import AuditoryOssicleDataContainer
+from .cf_carolina import CfCarolinaDataContainer
+from .plastic_plasmonics import PlasticPlasmonicsDataContainer
 
 REGISTRY: dict = {
     "b411":     B411DataContainer,
@@ -36,11 +40,21 @@ REGISTRY: dict = {
     "nielsen-m": NielsenMDataContainer,
     "nielsen-t": NielsenTDataContainer,
     "nielsen-mammoth": NielsenMammothDataContainer,
+    "cf-peek":  CfPeekDataContainer,
+    "auditory-ossicle": AuditoryOssicleDataContainer,
+    "cf-carolina": CfCarolinaDataContainer,
+    "plastic-plasmonics": PlasticPlasmonicsDataContainer,
 }
 
 
 def get_dataset(name: str) -> SmarttDataContainer:
-    """Return an instance of the dataset class registered under *name*."""
+    """Return an instance of the dataset class registered under *name*.
+
+    ``"cf-carolina"`` and ``"plastic-plasmonics"`` take their default q
+    selector (see their classes). To pick a specific q, construct the class
+    directly instead: ``CfCarolinaDataContainer(qbin=70)`` or
+    ``PlasticPlasmonicsDataContainer(q=0.362)``.
+    """
     if name not in REGISTRY:
         raise ValueError(
             f"Unknown dataset {name!r}.  Available: {sorted(REGISTRY)}"
@@ -59,6 +73,10 @@ __all__ = [
     "NielsenMDataContainer",
     "NielsenTDataContainer",
     "NielsenMammothDataContainer",
+    "CfPeekDataContainer",
+    "AuditoryOssicleDataContainer",
+    "CfCarolinaDataContainer",
+    "PlasticPlasmonicsDataContainer",
     "REGISTRY",
     "get_dataset",
 ]

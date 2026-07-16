@@ -121,6 +121,7 @@ def saxs_naf_reconstruction(
     angular_frac: float = 0.6,
     cold_start: bool = True,
     calibrate_c00: bool = True,
+    normalize_target: bool = True,
     field_kwargs: Optional[dict] = None,
     device: Optional[torch.device] = None,
     verbose: bool = True,
@@ -182,6 +183,16 @@ def saxs_naf_reconstruction(
         Before training, scale the c₀₀ bias so the isotropic prediction
         matches the mean of the valid target pixels.  Requires
         ``cold_start=True``.
+    normalize_target : bool
+        Divide the target projections by the mean of their valid pixels
+        before training, so the data loss (and its gradients) sit at O(1)
+        regardless of a dataset's raw intensity scale — different q-shells
+        span wildly different magnitudes (e.g. [0, 50] vs [0, 1e6]), and
+        without this the loss/gradient scale — and therefore how ``lr``,
+        ``reg_weight_sh``/``reg_weight_tv``, and any fixed gradient-clip
+        threshold behave — would vary per dataset.  The returned
+        ``reconstruction`` is rescaled back to the original (unnormalised)
+        units, so this is transparent to callers.  Default on.
     field_kwargs : dict, optional
         Extra keyword arguments forwarded to :class:`SaxsNafField`
         (e.g. ``hidden_dim``, ``n_hidden_layers``, ``n_levels``).
@@ -227,6 +238,16 @@ def saxs_naf_reconstruction(
         dc.projections.weights, device=device, dtype=torch.float32
     ).bool()
     n_proj = full_target.shape[0]
+
+    # Rescale so the data loss is O(1) regardless of this dataset's raw
+    # intensity range (q-shells span [0, ~50] up to [0, ~1e6]).  The forward
+    # model is linear in the SH coefficients, so training against a scaled
+    # target is equivalent to training against the original one up to a
+    # global rescale of the output, which is undone below.
+    target_scale = 1.0
+    if normalize_target:
+        target_scale = float(full_target[full_weights].abs().mean().clamp_min(1e-8))
+        full_target = full_target / target_scale
 
     # Build the field (cold start).
     model = SaxsNafField(volume_shape, ell_max=ell_max, **field_kwargs).to(device)
@@ -325,6 +346,12 @@ def saxs_naf_reconstruction(
         torch.cuda.synchronize()
     total_time = _time.time() - t0
 
+    if normalize_target:
+        # Bake the rescale into the model itself so it natively emits
+        # physical-unit coefficients for any later caller (checkpointing,
+        # super-resolution querying), not just the ``reconstruction`` below.
+        model.set_output_scale(target_scale)
+
     with torch.no_grad():
         final = model().detach().cpu()      # (X, Y, Z, C), full ℓ, no masks
 
@@ -335,4 +362,5 @@ def saxs_naf_reconstruction(
         "time": total_time,
         "iterations": n_iterations,
         "encoding": model.encoding.describe(),
+        "target_scale": target_scale,
     }
