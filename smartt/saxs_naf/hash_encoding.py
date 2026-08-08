@@ -149,7 +149,18 @@ class MultiResolutionHashEncoding(nn.Module):
         self.resolutions: List[int] = []
         self.levels = nn.ModuleList()
         for level in range(n_levels):
-            res = int(np.floor(base_resolution * (b ** level)))
+            if level == n_levels - 1:
+                # Exactly max_resolution by construction (base_resolution *
+                # b**(n_levels-1) == max_resolution algebraically) -- computing
+                # it via floor(exp(log(...))) instead risks landing a hair
+                # below the integer (e.g. 137.99999999999994 vs
+                # 138.00000000000003) depending on the CPU's SIMD dispatch for
+                # exp/log, silently flipping this level's resolution -- and
+                # hence its table shape -- across otherwise-identical hardware.
+                # Skip the round-trip for the top level to make it deterministic.
+                res = max_resolution
+            else:
+                res = int(np.floor(base_resolution * (b ** level)))
             res = max(res, 2)
             self.resolutions.append(res)
             self.levels.append(

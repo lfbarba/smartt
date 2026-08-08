@@ -387,7 +387,10 @@ class CacheChooser:
     """
 
     #: display order for the category grids
-    ORDER = ["mumott_sh", "mumott_gk", "naf", "ground_truth"]
+    ORDER = ["mumott_sh", "mumott_gk", "naf", "naf_twophase_p1", "naf_twophase",
+              "naf_bgmask", "naf_stochangular_p1", "naf_stochangular",
+              "naf_antioverfit_reg", "naf_antioverfit_earlystop", "naf_antioverfit_combined",
+              "sh_sa", "ground_truth"]
 
     def __init__(self, cache_dir):
         self.cache_dir = Path(cache_dir)
@@ -438,10 +441,19 @@ class CacheChooser:
 
     def _row_label(self, sub, idx):
         """Compact one-line summary of a row: hash + the columns that vary."""
+        def _nunique(col):
+            # Sidecar values can include unhashable types (e.g. voxel_indices
+            # lists), which crash Series.nunique(); stringify first since this
+            # is only used to decide whether a column varies, not to display it.
+            try:
+                return col.nunique(dropna=False)
+            except TypeError:
+                return col.astype(str).nunique(dropna=False)
+
         varying = [
             c for c in sub.columns
             if c not in _CHOOSER_META_COLS and c not in ("category", "dc_type")
-            and sub[c].nunique(dropna=False) > 1
+            and _nunique(sub[c]) > 1
         ]
         row = sub.loc[idx]
         parts = [f"{c}={row[c]}" for c in varying]

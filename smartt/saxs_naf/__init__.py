@@ -11,7 +11,7 @@ See the design memory ``project_saxs_naf_design`` for the full rationale.
 from .hash_encoding import MultiResolutionHashEncoding, GridLevel
 from .model import SaxsNafField
 from .schedule import Annealer
-from .reconstruct import saxs_naf_reconstruction
+from .reconstruct import saxs_naf_reconstruction, saxs_naf_two_phase_reconstruction
 from .cache import (
     save_recon,
     load_recon,
@@ -43,6 +43,7 @@ __all__ = [
     "SaxsNafField",
     "Annealer",
     "saxs_naf_reconstruction",
+    "saxs_naf_two_phase_reconstruction",
     "save_recon",
     "load_recon",
     "list_cache",

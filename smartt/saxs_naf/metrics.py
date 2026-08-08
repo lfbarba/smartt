@@ -216,12 +216,15 @@ def compute_ground_truth(
     else:
         raise ValueError(f"gt_method must be 'sh' or 'gk', got {gt_method!r}")
 
+    from smartt.shutils.evaulate_sh import patch_nonconvergent_basis_set
+    patch_nonconvergent_basis_set(basis)
+
     rc = GradientResidualCalculator(
         data_container=combined_dc,
         basis_set=basis,
         projector=projector,
     )
-    loss = SquaredLoss(residual_calculator=rc)
+    loss = SquaredLoss(residual_calculator=rc, use_weights=True)
     loss.add_regularizer("laplacian", Laplacian(), regularization_weight=laplacian_weight)
     result = LBFGS(loss, maxiter=n_iterations, maxcor=maxcor).optimize()
 
@@ -321,17 +324,37 @@ def _holdout_nrmse(
     ell_max: int,
     device,
 ) -> float:
-    """Re-project ``coeffs`` through ``held_out_dc`` and compute NRMSE."""
+    """Re-project ``coeffs`` through ``held_out_dc`` and compute NRMSE.
+
+    Uses mumott's own curvature-correct basis set for WAXS geometries
+    (``two_theta`` nonzero) instead of the flat-plane quadrature, matching
+    whichever Y_int source the training loop used (see
+    ``smartt.saxs_naf.reconstruct._full_dataset_Y_int``) — the absolute scale
+    of Y_int is arbitrary (self-calibrated via ``calibrate_c00``), but it must
+    be the *same* convention at train and eval time for NRMSE to be meaningful.
+    """
     import torch
     from smartt.projectors import build_mumott_projector
-    from smartt.shutils.evaulate_sh import forward_quadrature
+    from smartt.shutils.evaulate_sh import (
+        forward_quadrature, precompute_Y_int, mumott_projection_matrix,
+    )
 
-    projector = build_mumott_projector(held_out_dc.geometry, device=device)
+    geometry = held_out_dc.geometry
+    is_waxs = bool(np.any(np.asarray(geometry.two_theta) != 0))
+    if is_waxs:
+        Y_int = mumott_projection_matrix(
+            geometry.probed_coordinates, ell_max=ell_max, device=device,
+        )
+    else:
+        Y_int = precompute_Y_int(geometry.probed_coordinates, ell_max=ell_max, device=device)
+
+    projector = build_mumott_projector(geometry, device=device)
     coeffs_t = torch.tensor(coeffs, dtype=torch.float32, device=device)
     with torch.no_grad():
         spatial = projector(coeffs_t)
         pred = forward_quadrature(
-            held_out_dc.geometry.probed_coordinates, spatial, ell_max=ell_max
+            geometry.probed_coordinates, spatial, ell_max=ell_max,
+            projection_matrix=Y_int, mumott_compat=False,
         ).cpu().numpy()
 
     target = held_out_dc.projections.data
