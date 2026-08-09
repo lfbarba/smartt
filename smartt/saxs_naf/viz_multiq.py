@@ -182,7 +182,19 @@ def compare_multiq_vs_baselines(
         nrmse_c00 = float(np.sqrt(((c00_pred - c00_ref) ** 2).mean()) / (c00_ref.std() + 1e-8))
         corr_c00 = float(np.corrcoef(c00_ref.ravel(), c00_pred.ravel())[0, 1])
 
-        mask = _auto_mask(ref_coeffs.astype(np.float32))
+        # Mask on the JOINT MODEL's own prediction, not the independent
+        # baseline -- discovered on c5, where the classical per-voxel GK
+        # baseline has a handful of divergent, poorly-constrained
+        # volume-boundary voxels (~1000x the real sample's c00 scale) that
+        # fool Otsu into masking ~0.3% of the volume (the outliers) instead
+        # of the object; percentile-clipping before Otsu only traded that
+        # failure for the opposite one (~95% masked). The trained field is
+        # smooth by construction (coarse-to-fine hash grid, shared trunk
+        # across every q-shell) and has no such single-voxel divergences, so
+        # its own c00 gives a stable, physically-sensible mask (verified to
+        # reproduce ~consistent mask fractions/agreement on c4, where the
+        # baseline-based mask was already clean).
+        mask = _auto_mask(pred_coeffs.astype(np.float32))
         mean_c00_ref = float(c00_ref[mask].mean())
         mean_c00_pred = float(c00_pred[mask].mean())
 
