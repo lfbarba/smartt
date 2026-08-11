@@ -12,8 +12,23 @@ python /myhome/smartt/scripts/orchestrate_benchmark.py
 # Specific datasets only:
 python /myhome/smartt/scripts/orchestrate_benchmark.py --datasets b411 frogbone
 
-# Skip NAF sweep, only baseline methods:
+# Skip NAF, only baseline methods:
 python /myhome/smartt/scripts/orchestrate_benchmark.py --methods mumott_sh mumott_gk
+
+# One job per q-bin for a q-indexed dataset (e.g. all 79 frogbone shells),
+# instead of the dataset's single default q-bin:
+python /myhome/smartt/scripts/orchestrate_benchmark.py --datasets frogbone \\
+    --methods mumott_gk --qbins $(seq 0 78)
+
+# Same, for c4 (uses a 'q' constructor kwarg instead of 'qbin' -- detected
+# automatically): a handful of shells, or every available index via
+# C4DataContainer.list_qshells() (129, sparse -- not every index in [1,194]):
+python /myhome/smartt/scripts/orchestrate_benchmark.py --datasets c4 \\
+    --methods mumott_gk --qbins 1 10 17 27 38 39 100 111 121 131 142 152 163 173 184 194
+
+# Disable phase-2 regularisation for a dataset where it hurts (e.g. WAXS):
+python /myhome/smartt/scripts/orchestrate_benchmark.py --datasets steel-wire-waxs \\
+    --methods naf --reg_sh 0.0 --reg_tv 0.0
 """
 import sys
 sys.path.insert(0, "/myhome/smartt")
@@ -33,24 +48,47 @@ from smartt.saxs_naf.cache import load_recon, _param_hash
 # Keeps these in sync with reconstruct_job.py
 # ---------------------------------------------------------------------------
 
-_HOLDOUT_FRAC = 0.0
+_HOLDOUT_FRAC = 0.
 _HOLDOUT_SEED = 42
 _ELL_MAX      = 8
 
-# Fixed NAF base params (not swept)
-_BASE_NAF = dict(
-    n_iterations=2000,
-    batch_size=100,
+# Standard two-phase NAF recipe (see saxs_naf_two_phase_reconstruction
+# docstring for the full rationale) — the single, non-swept configuration
+# every dataset is reconstructed with. Phase 1 cold-starts and recovers a
+# clean object/background split; phase 2 warm-starts at a much higher LR with
+# everything unlocked, guarded against overfitting by mild regularisation
+# (reg_target_frac_sh/tv — a *target fraction of phase 1's own data loss*,
+# auto-calibrated per dataset from phase 1's output, not a fixed weight; a
+# fixed weight was tried first and found to be 50-900x miscalibrated across
+# datasets with different coefficient scales — see
+# saxs_naf_two_phase_reconstruction docstring) plus held-out-tracked early
+# stopping. Not universally positive: even correctly calibrated, regularisation
+# slightly hurt steel-wire-waxs (a WAXS dataset) in testing even though it
+# helped b411/cf-carolina, so a per-dataset override (--reg_sh/--reg_tv, or
+# 0.0 to disable) is expected to be needed occasionally rather than treated
+# as a bug in these defaults.
+_STANDARD_NAF = dict(
+    phase1_n_iterations=2001,
+    phase1_lr=2e-4,
+    phase1_batch_size=100,
+    phase1_spatial_frac=0.5,
+    phase1_angular_frac=0.6,
+    phase1_stochastic_angular=True,
+    phase2_n_iterations=1500,
+    phase2_lr=5e-3,
+    phase2_batch_size=100,
+    phase2_reg_target_frac_sh=0.02,
+    phase2_reg_target_frac_tv=0.05,
+    phase2_early_stop_patience=8,
+    phase2_holdout_eval_every=25,
+    n_features_per_level=8,
+    hidden_dim=64,
+    n_hidden_layers=2,
+    grid_lr_multiplier=10.0,
+    loss_type="huber",
+    huber_delta=1.0,
+    normalize_target=True,
 )
-
-# HP sweep grid for NAF
-# _SWEEP_REG_SH = [5e-5, 1e-5, 5e-6, 1e-6]
-# _SWEEP_REG_TV = [1e-4, 5e-5, 1e-5, 5e-6]
-# _SWEEP_LR     = [1e-2, 5e-3, 1e-3]
-
-_SWEEP_REG_SH = [0]
-_SWEEP_REG_TV = [0]
-_SWEEP_LR     = [0.0005]
 
 # Fixed mumott params
 _MUMOTT = dict(
@@ -80,22 +118,20 @@ _RESOURCES_MUMOTT = (
 # Params dict builders — identical structure to reconstruct_job.py
 # ---------------------------------------------------------------------------
 
-def _naf_params(dataset: str, dc_type: str, reg_sh: float, reg_tv: float, lr: float) -> dict:
+def _naf_params(dataset: str, dc_type: str, reg_sh: float, reg_tv: float, q_kwargs: dict = None) -> dict:
     return dict(
         method="naf",
         dataset=dataset,
         dc_type=dc_type,
         ell_max=_ELL_MAX,
-        **_BASE_NAF,
-        lr=lr,
-        reg_weight_sh=reg_sh,
-        reg_weight_tv=reg_tv,
+        **{**_STANDARD_NAF, "phase2_reg_target_frac_sh": reg_sh, "phase2_reg_target_frac_tv": reg_tv},
         holdout_frac=_HOLDOUT_FRAC,
         holdout_seed=_HOLDOUT_SEED,
+        **(q_kwargs or {}),
     )
 
 
-def _mumott_params(method: str, dataset: str, dc_type: str) -> dict:
+def _mumott_params(method: str, dataset: str, dc_type: str, q_kwargs: dict = None) -> dict:
     return dict(
         method=method,
         dataset=dataset,
@@ -104,11 +140,34 @@ def _mumott_params(method: str, dataset: str, dc_type: str) -> dict:
         **_MUMOTT,
         holdout_frac=_HOLDOUT_FRAC,
         holdout_seed=_HOLDOUT_SEED,
+        **(q_kwargs or {}),
     )
 
 
 def _cache_name(method: str, dataset: str, dc_type: str) -> str:
     return f"{method}_{dataset}_{dc_type}"
+
+
+def _q_kwarg_name(ds_name: str) -> str:
+    """Which constructor kwarg selects the q-index for this dataset.
+
+    Introspects the registered class's ``__init__`` rather than hard-coding
+    a convention, since it differs by dataset: frogbone/cf-carolina use
+    ``qbin``, c4/px-chameleon/plastic-plasmonics use ``q`` (see
+    ``QIndexedDataContainer`` in ``smartt/data_containers/qindexed_base.py``,
+    shared by c4 and the near-identical upcoming c5).
+    """
+    import inspect
+    cls = REGISTRY[ds_name]
+    params = inspect.signature(cls.__init__).parameters
+    if "q" in params:
+        return "q"
+    if "qbin" in params:
+        return "qbin"
+    raise ValueError(
+        f"{ds_name!r} ({cls.__name__}) has no q/qbin constructor kwarg — "
+        f"not a q-indexed dataset, so --qbins doesn't apply to it."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -128,13 +187,19 @@ def _runai_cmd(method: str, dataset: str, dc_type: str, params: dict) -> str:
     resources = _RESOURCES_NAF if method == "naf" else _RESOURCES_MUMOTT
 
     skip = {"method", "dataset", "dc_type"}
-    cli_args = " ".join(
-        f"--{k} {v}" for k, v in params.items() if k not in skip
-    )
+
+    def _flag(k, v):
+        if isinstance(v, bool):
+            # reconstruct_job.py declares these via argparse.BooleanOptionalAction.
+            return f"--{k}" if v else f"--no-{k}"
+        return f"--{k} {v}"
+
+    cli_args = " ".join(_flag(k, v) for k, v in params.items() if k not in skip)
 
     return (
         f"runai workspace submit {job} "
         f"-i {_RUNAI_IMAGE} -p {_RUNAI_PROJECT} {resources} "
+        f"--preemptibility preemptible "
         f"--command -- {_LAUNCHER} {_WORKER} "
         f"--dataset {dataset} --dc_type {dc_type} --method {method} {cli_args}"
     )
@@ -157,16 +222,23 @@ def main():
         choices=["mumott_sh", "mumott_gk", "naf"],
     )
     parser.add_argument(
-        "--reg_sh", nargs="+", type=float, default=_SWEEP_REG_SH,
-        help="NAF reg_weight_sh sweep values"
+        "--reg_sh", nargs="+", type=float, default=[_STANDARD_NAF["phase2_reg_target_frac_sh"]],
+        help="NAF phase2_reg_target_frac_sh override(s) — pass 0.0 for datasets "
+             "where regularisation hurts more than it helps (see _STANDARD_NAF)"
     )
     parser.add_argument(
-        "--reg_tv", nargs="+", type=float, default=_SWEEP_REG_TV,
-        help="NAF reg_weight_tv sweep values"
+        "--reg_tv", nargs="+", type=float, default=[_STANDARD_NAF["phase2_reg_target_frac_tv"]],
+        help="NAF phase2_reg_target_frac_tv override(s), same caveat as --reg_sh"
     )
     parser.add_argument(
-        "--lr", nargs="+", type=float, default=_SWEEP_LR,
-        help="NAF learning rate sweep values"
+        "--qbins", nargs="+", type=int, default=None,
+        help="For q-indexed datasets (frogbone/cf-carolina use a 'qbin' "
+             "constructor kwarg; c4/px-chameleon/plastic-plasmonics use 'q' "
+             "-- auto-detected per dataset, see _q_kwarg_name): specific "
+             "q-indices to generate one job each for, e.g. --qbins $(seq 0 78) "
+             "for every frogbone shell, or --qbins $(cat qbins.txt) for c4's "
+             "129 (sparse) indices. Default: just the dataset's single "
+             "default q-index (no --q/--qbin flag on the generated command)."
     )
     args = parser.parse_args()
 
@@ -174,29 +246,31 @@ def main():
     cached_count = 0
 
     for ds_name in args.datasets:
-        ds = get_dataset(ds_name)
-        cache_dir = ds.get_cache_dir()
+        q_kwarg_name = _q_kwarg_name(ds_name) if args.qbins is not None else None
+        qbin_values = args.qbins if args.qbins is not None else [None]
 
-        for dc_type in ds.available_dc_types():
-            for method in args.methods:
-                if method == "naf":
-                    combos = list(product(args.reg_sh, args.reg_tv, args.lr))
-                else:
-                    combos = [(None, None, None)]
+        for qbin in qbin_values:
+            q_kwargs = {q_kwarg_name: qbin} if qbin is not None else {}
+            ds = get_dataset(ds_name, **q_kwargs)
+            cache_dir = ds.get_cache_dir()
 
-                for reg_sh, reg_tv, lr in combos:
-                    if method == "naf":
-                        params = _naf_params(ds_name, dc_type, reg_sh, reg_tv, lr)
-                    else:
-                        params = _mumott_params(method, ds_name, dc_type)
+            for dc_type in ds.available_dc_types():
+                for method in args.methods:
+                    combos = list(product(args.reg_sh, args.reg_tv)) if method == "naf" else [(None, None)]
 
-                    name = _cache_name(method, ds_name, dc_type)
-                    hit  = load_recon(cache_dir, name, params)
+                    for reg_sh, reg_tv in combos:
+                        if method == "naf":
+                            params = _naf_params(ds_name, dc_type, reg_sh, reg_tv, q_kwargs=q_kwargs)
+                        else:
+                            params = _mumott_params(method, ds_name, dc_type, q_kwargs=q_kwargs)
 
-                    if hit is not None:
-                        cached_count += 1
-                    else:
-                        missing_cmds.append(_runai_cmd(method, ds_name, dc_type, params))
+                        name = _cache_name(method, ds_name, dc_type)
+                        hit  = load_recon(cache_dir, name, params)
+
+                        if hit is not None:
+                            cached_count += 1
+                        else:
+                            missing_cmds.append(_runai_cmd(method, ds_name, dc_type, params))
 
     # Summary
     total = cached_count + len(missing_cmds)

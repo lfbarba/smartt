@@ -1,0 +1,153 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyperFirstAtBeginDocument{\AtBeginDocument}
+\HyperFirstAtBeginDocument{\ifx\hyper@anchor\@undefined
+\global\let\oldcontentsline\contentsline
+\gdef\contentsline#1#2#3#4{\oldcontentsline{#1}{#2}{#3}}
+\global\let\oldnewlabel\newlabel
+\gdef\newlabel#1#2{\newlabelxx{#1}#2}
+\gdef\newlabelxx#1#2#3#4#5#6{\oldnewlabel{#1}{{#2}{#3}}}
+\AtEndDocument{\ifx\hyper@anchor\@undefined
+\let\contentsline\oldcontentsline
+\let\newlabel\oldnewlabel
+\fi}
+\fi}
+\global\let\hyper@last\relax 
+\gdef\HyperFirstAtBeginDocument#1{#1}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\bibstyle{plainnat}
+\citation{Liebi2015,Schaff2015}
+\citation{Georgiadis2015}
+\citation{Crowther1970}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
+\newlabel{sec:intro}{{1}{1}{Introduction}{section.1}{}}
+\citation{Nielsen2024}
+\citation{Liebi2018,Nielsen2023}
+\citation{Mildenhall2020}
+\citation{Zha2022}
+\citation{Liebi2015}
+\citation{Schaff2015}
+\citation{Liebi2018}
+\citation{Nielsen2023}
+\citation{mumott}
+\citation{Frikel2013}
+\citation{Nielsen2024}
+\citation{Mildenhall2020}
+\citation{Tancik2020}
+\citation{Sitzmann2020}
+\citation{Mueller2022}
+\citation{Zha2022}
+\citation{Ruckert2022}
+\citation{Lin2021barf}
+\citation{Yang2023}
+\citation{Li2023neuralangelo}
+\citation{Fang2026dropansh}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Related work}{3}{section.2}\protected@file@percent }
+\newlabel{sec:related}{{2}{3}{Related work}{section.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Tensor tomography and its reconstruction algorithms.}{3}{section*.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{The missing wedge.}{3}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Implicit neural representations.}{3}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Frequency scheduling.}{3}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}From radiance fields to reciprocal-space maps}{4}{section.3}\protected@file@percent }
+\newlabel{sec:method}{{3}{4}{From radiance fields to reciprocal-space maps}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}What is being reconstructed}{4}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{A scoping remark that matters throughout this paper.}{4}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Why this looks like a radiance field}{4}{subsection.3.2}\protected@file@percent }
+\citation{Mueller2022}
+\citation{Mueller2022}
+\citation{Mueller2022}
+\citation{Lin2021barf,Yang2023}
+\citation{Li2023neuralangelo}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}The representation}{5}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Growing the model during training}{5}{subsection.3.4}\protected@file@percent }
+\newlabel{sec:annealing}{{3.4}{5}{Growing the model during training}{subsection.3.4}{}}
+\citation{Kingma2015}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Schematic of the multiresolution hash encoding \citep  {Mueller2022} that produces the coordinate embedding $\gamma (\boldsymbol  {r})$ entering the representation $u_\theta (\boldsymbol  {r}) = s \odot \sigma \!\left ( W\, \mathrm  {MLP}_\theta (\gamma (\boldsymbol  {r})) \right )$ of Section\nobreakspace  {}\ref  {sec:formulation}. (1) For an input position $\boldsymbol  {r}$ we find the surrounding voxel at each of the $L$ resolution levels and hash the integer coordinates of its corners to obtain per-corner table indices. (2) For every corner index we look up the corresponding $F$-dimensional feature vector from that level's hash table, and (3) linearly interpolate the corner features according to the position of $\boldsymbol  {r}$ within the level-$j$ voxel. (4) The interpolated features from all $L$ levels are concatenated with the raw coordinate itself (the auxiliary input $\xi =\boldsymbol  {r}$ shown in the figure) to form $\gamma (\boldsymbol  {r})$, which (5) is passed through $\mathrm  {MLP}_\theta $ and the linear readout $W$ to predict the spherical-harmonic coefficients. During training, gradients are backpropagated through the MLP (5), the concatenation (4) and the interpolation (3), and accumulate in the looked-up corner features---the mechanism, discussed in Section\nobreakspace  {}\ref  {sec:method}, that ties neighbouring voxels together and lets well-measured directions constrain poorly measured ones.\relax }}{6}{figure.caption.6}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{fig:hashenc}{{1}{6}{Schematic of the multiresolution hash encoding \citep {Mueller2022} that produces the coordinate embedding $\gamma (\rvec )$ entering the representation $u_\theta (\rvec ) = s \odot \sigma \!\left ( W\, \mathrm {MLP}_\theta (\gamma (\rvec )) \right )$ of Section~\ref {sec:formulation}. (1) For an input position $\rvec $ we find the surrounding voxel at each of the $L$ resolution levels and hash the integer coordinates of its corners to obtain per-corner table indices. (2) For every corner index we look up the corresponding $F$-dimensional feature vector from that level's hash table, and (3) linearly interpolate the corner features according to the position of $\rvec $ within the level-$j$ voxel. (4) The interpolated features from all $L$ levels are concatenated with the raw coordinate itself (the auxiliary input $\xi =\rvec $ shown in the figure) to form $\gamma (\rvec )$, which (5) is passed through $\mathrm {MLP}_\theta $ and the linear readout $W$ to predict the spherical-harmonic coefficients. During training, gradients are backpropagated through the MLP (5), the concatenation (4) and the interpolation (3), and accumulate in the looked-up corner features---the mechanism, discussed in Section~\ref {sec:method}, that ties neighbouring voxels together and lets well-measured directions constrain poorly measured ones.\relax }{figure.caption.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}A subtlety: zeros and adaptive optimisers}{6}{subsection.3.5}\protected@file@percent }
+\newlabel{sec:stochastic}{{3.5}{6}{A subtlety: zeros and adaptive optimisers}{subsection.3.5}{}}
+\citation{Fang2026dropansh}
+\citation{Paszke2019}
+\citation{Carlsen2024}
+\citation{Nielsen2023}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.6}Two-phase training}{7}{subsection.3.6}\protected@file@percent }
+\newlabel{sec:twophase}{{3.6}{7}{Two-phase training}{subsection.3.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.7}The forward operator in PyTorch}{7}{subsection.3.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Datasets}{7}{section.4}\protected@file@percent }
+\newlabel{sec:datasets}{{4}{7}{Datasets}{section.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Simulated phantoms with exact ground truth.}{7}{section*.8}\protected@file@percent }
+\citation{Nielsen2024}
+\citation{Nielsen2023}
+\citation{Carlsen2024}
+\citation{Liebi2018}
+\citation{Nielsen2023}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Datasets. ``Wedge'' is the tilt limit of the acquisition; \SI {45}{\degree } is the standard geometric constraint, ``none'' means full angular coverage. $\ell _{\mathrm  {max}}$ is the band limit used by all methods on that dataset.\relax }}{8}{table.caption.7}\protected@file@percent }
+\newlabel{tab:datasets}{{1}{8}{Datasets. ``Wedge'' is the tilt limit of the acquisition; \SI {45}{\degree } is the standard geometric constraint, ``none'' means full angular coverage. $\ellmax $ is the band limit used by all methods on that dataset.\relax }{table.caption.7}{}}
+\@writefile{toc}{\contentsline {paragraph}{A full-coverage control.}{8}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Real data, evaluated without a circular reference.}{8}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Wide-angle scattering.}{8}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Results}{9}{section.5}\protected@file@percent }
+\newlabel{sec:results}{{5}{9}{Results}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Qualitative: what the missing wedge does}{9}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Quantitative: datasets with ground truth}{9}{subsection.5.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Datasets with ground truth. All methods trained on the full dataset with no holdout. Best value per column in bold. Arrows indicate the direction of improvement.\relax }}{10}{table.caption.15}\protected@file@percent }
+\newlabel{tab:gt}{{2}{10}{Datasets with ground truth. All methods trained on the full dataset with no holdout. Best value per column in bold. Arrows indicate the direction of improvement.\relax }{table.caption.15}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Cross-mount generalisation on \texttt  {trabecular-bone}: NRMSE of predicted versus measured projections for the mount \emph  {not} used in training. No reconstructed reference is involved on either side of this comparison, so it is the one quantitative result on this dataset that cannot be biased by which algorithm produced a ``ground truth.''\relax }}{10}{table.caption.16}\protected@file@percent }
+\newlabel{tab:crossmount}{{3}{10}{Cross-mount generalisation on \texttt {trabecular-bone}: NRMSE of predicted versus measured projections for the mount \emph {not} used in training. No reconstructed reference is involved on either side of this comparison, so it is the one quantitative result on this dataset that cannot be biased by which algorithm produced a ``ground truth.''\relax }{table.caption.16}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Quantitative: real data via cross-mount consistency}{10}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Wide-angle scattering without ground truth}{10}{subsection.5.4}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces \texttt  {steel-wire-waxs}: held-out projection NRMSE (\SI {15}{\percent } of projections withheld). No ground truth exists for this sample.\relax }}{11}{table.caption.17}\protected@file@percent }
+\newlabel{tab:steelwire}{{4}{11}{\texttt {steel-wire-waxs}: held-out projection NRMSE (\SI {15}{\percent } of projections withheld). No ground truth exists for this sample.\relax }{table.caption.17}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.5}On explicit regularisation}{11}{subsection.5.5}\protected@file@percent }
+\newlabel{sec:regularisation}{{5.5}{11}{On explicit regularisation}{subsection.5.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Mathematical formulation}{11}{section.6}\protected@file@percent }
+\newlabel{sec:formulation}{{6}{11}{Mathematical formulation}{section.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Forward model}{11}{subsection.6.1}\protected@file@percent }
+\citation{Nielsen2024}
+\citation{Mueller2022}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}The missing wedge}{12}{subsection.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}Representation and objective}{12}{subsection.6.3}\protected@file@percent }
+\newlabel{eq:loss}{{5}{12}{Representation and objective}{equation.6.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.4}Schedules}{12}{subsection.6.4}\protected@file@percent }
+\citation{Kingma2015}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.5}Training configuration}{13}{subsection.6.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Conclusions}{13}{section.7}\protected@file@percent }
+\newlabel{sec:conclusions}{{7}{13}{Conclusions}{section.7}{}}
+\citation{Nielsen2024}
+\citation{Nielsen2023}
+\citation{Wang2004}
+\bibdata{paper}
+\bibcite{Carlsen2024}{{1}{2024}{{Carlsen et~al.}}{{Carlsen, Appel, Hearn, Olsson, Menzel, and Liebi}}}
+\@writefile{toc}{\contentsline {section}{\numberline {A}Metrics}{14}{appendix.A}\protected@file@percent }
+\newlabel{sec:metrics}{{A}{14}{Metrics}{appendix.A}{}}
+\bibcite{Crowther1970}{{2}{1970}{{Crowther et~al.}}{{Crowther, DeRosier, and Klug}}}
+\bibcite{Fang2026dropansh}{{3}{2026}{{Fang et~al.}}{{Fang, Shen, Zhang, Wang, Wang, Ding, Yu, and Igarashi}}}
+\bibcite{Frikel2013}{{4}{2013}{{Frikel and Quinto}}{{}}}
+\bibcite{Georgiadis2015}{{5}{2015}{{Georgiadis et~al.}}{{Georgiadis, Guizar-Sicairos, Zwahlen, Tr{\"u}ssel, Bunk, M{\"u}ller, and Schneider}}}
+\bibcite{Kingma2015}{{6}{2015}{{Kingma and Ba}}{{}}}
+\bibcite{Li2023neuralangelo}{{7}{2023}{{Li et~al.}}{{Li, M{\"u}ller, Evans, Taylor, Unberath, Liu, and Lin}}}
+\bibcite{Liebi2015}{{8}{2015}{{Liebi et~al.}}{{Liebi, Georgiadis, Menzel, Schneider, Kohlbrecher, Bunk, and Guizar-Sicairos}}}
+\bibcite{Liebi2018}{{9}{2018}{{Liebi et~al.}}{{Liebi, Georgiadis, Kohlbrecher, Holler, Raabe, Usov, Menzel, Schneider, Bunk, and Guizar-Sicairos}}}
+\bibcite{Lin2021barf}{{10}{2021}{{Lin et~al.}}{{Lin, Ma, Torralba, and Lucey}}}
+\bibcite{Mildenhall2020}{{11}{2020}{{Mildenhall et~al.}}{{Mildenhall, Srinivasan, Tancik, Barron, Ramamoorthi, and Ng}}}
+\bibcite{Mueller2022}{{12}{2022}{{M{\"u}ller et~al.}}{{M{\"u}ller, Evans, Schied, and Keller}}}
+\bibcite{Nielsen2023}{{13}{2023}{{Nielsen et~al.}}{{Nielsen, Erhart, Guizar-Sicairos, and Liebi}}}
+\bibcite{Nielsen2024}{{14}{2024}{{Nielsen et~al.}}{{Nielsen, T{\"a}nzer, Rodriguez-Fernandez, Erhart, and Liebi}}}
+\bibcite{mumott}{{15}{2025}{{Nielsen et~al.}}{{Nielsen, Carlsen, Wang, Baroni, T{\"a}nzer, Liebi, and Erhart}}}
+\bibcite{Paszke2019}{{16}{2019}{{Paszke et~al.}}{{Paszke, Gross, Massa, Lerer, Bradbury, Chanan, Killeen, Lin, Gimelshein, Antiga, Desmaison, K{\"o}pf, Yang, DeVito, Raison, Tejani, Chilamkurthy, Steiner, Fang, Bai, and Chintala}}}
+\bibcite{Ruckert2022}{{17}{2022}{{R{\"u}ckert et~al.}}{{R{\"u}ckert, Wang, Li, Idoughi, and Heidrich}}}
+\bibcite{Schaff2015}{{18}{2015}{{Schaff et~al.}}{{Schaff, Bech, Zaslansky, Jud, Liebi, Guizar-Sicairos, and Pfeiffer}}}
+\bibcite{Sitzmann2020}{{19}{2020}{{Sitzmann et~al.}}{{Sitzmann, Martel, Bergman, Lindell, and Wetzstein}}}
+\bibcite{Tancik2020}{{20}{2020}{{Tancik et~al.}}{{Tancik, Srinivasan, Mildenhall, Fridovich-Keil, Raghavan, Singhal, Ramamoorthi, Barron, and Ng}}}
+\bibcite{Wang2004}{{21}{2004}{{Wang et~al.}}{{Wang, Bovik, Sheikh, and Simoncelli}}}
+\bibcite{Yang2023}{{22}{2023}{{Yang et~al.}}{{Yang, Pavone, and Wang}}}
+\bibcite{Zha2022}{{23}{2022}{{Zha et~al.}}{{Zha, Zhang, and Li}}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Human trabecular bone (\texttt  {trabecular-bone}, \texttt  {main} mount) along the worst-case reciprocal-space direction, whose missing arc spans \SI {180}{\degree }. Rows alternate between the reconstructed scalar volume $I_{\hat  {\boldsymbol  {q}}}$ on three orthogonal planes and the residual against the left-most column, a \texttt  {mumott GK} reconstruction of the combined two-mount data shown for visual orientation only (see Section\nobreakspace  {}\ref  {sec:datasets} for why we do not treat it as ground truth). Both single-mount baselines blur the trabecular structure and under-estimate it systematically (blue); the neural field does not.\relax }}{17}{figure.caption.12}\protected@file@percent }
+\newlabel{fig:trabecular-bone}{{2}{17}{Human trabecular bone (\texttt {trabecular-bone}, \texttt {main} mount) along the worst-case reciprocal-space direction, whose missing arc spans \SI {180}{\degree }. Rows alternate between the reconstructed scalar volume $I_{\qvec }$ on three orthogonal planes and the residual against the left-most column, a \texttt {mumott GK} reconstruction of the combined two-mount data shown for visual orientation only (see Section~\ref {sec:datasets} for why we do not treat it as ground truth). Both single-mount baselines blur the trabecular structure and under-estimate it systematically (blue); the neural field does not.\relax }{figure.caption.12}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces The \texttt  {nielsen-mammoth} phantom along the worst-case direction, against the \emph  {exact} ground truth. The baselines under-estimate the interior and blur past the object boundary; the neural field's residual is nearly featureless.\relax }}{18}{figure.caption.13}\protected@file@percent }
+\newlabel{fig:mammoth}{{3}{18}{The \texttt {nielsen-mammoth} phantom along the worst-case direction, against the \emph {exact} ground truth. The baselines under-estimate the interior and blur past the object boundary; the neural field's residual is nearly featureless.\relax }{figure.caption.13}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces The same bone dataset along a fully measured direction (missing arc \SI {0}{\degree }). With complete angular coverage the methods largely agree, isolating the missing wedge as the source of the differences above.\relax }}{19}{figure.caption.14}\protected@file@percent }
+\newlabel{fig:covered}{{4}{19}{The same bone dataset along a fully measured direction (missing arc \SI {0}{\degree }). With complete angular coverage the methods largely agree, isolating the missing wedge as the source of the differences above.\relax }{figure.caption.14}{}}
+\gdef \@abspage@last{19}

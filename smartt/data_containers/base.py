@@ -18,6 +18,7 @@ class SmarttDataContainer(ABC):
     name: str          # unique slug used in job names and cache keys
     has_remount: bool = False
     has_combined: bool = False
+    is_waxs: bool = False   # True if geometry.two_theta is nonzero (Ewald curvature)
 
     # ------------------------------------------------------------------
     # Data access — override as needed

@@ -33,7 +33,7 @@ class CfCarolinaDataContainer(SmarttDataContainer):
     _DATA_DIR       = Path("/myhome/data/smartt/shared/cf_carolina")
     _CACHE_DIR_ROOT = Path("/myhome/data/smartt/shared/results/cf_carolina_benchmark")
 
-    _DEFAULT_QBIN = 11
+    _DEFAULT_QBIN = 71
 
     def __init__(self, qbin: int = _DEFAULT_QBIN):
         qbin = int(qbin)

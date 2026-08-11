@@ -1,0 +1,213 @@
+\begin{thebibliography}{23}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Carlsen et~al.(2024)Carlsen, Appel, Hearn, Olsson, Menzel, and
+  Liebi]{Carlsen2024}
+Mads Carlsen, Christian Appel, William Hearn, Martina Olsson, Andreas Menzel,
+  and Marianne Liebi.
+\newblock {X}-ray tensor tomography for small-grained polycrystals with strong
+  texture.
+\newblock \emph{Journal of Applied Crystallography}, 57\penalty0 (4):\penalty0
+  986--1000, 2024.
+\newblock \doi{10.1107/S1600576724004588}.
+
+\bibitem[Crowther et~al.(1970)Crowther, DeRosier, and Klug]{Crowther1970}
+R.~A. Crowther, D.~J. DeRosier, and A.~Klug.
+\newblock The reconstruction of a three-dimensional structure from projections
+  and its application to electron microscopy.
+\newblock \emph{Proceedings of the Royal Society of London A}, 317\penalty0
+  (1530):\penalty0 319--340, 1970.
+\newblock \doi{10.1098/rspa.1970.0119}.
+
+\bibitem[Fang et~al.(2026)Fang, Shen, Zhang, Wang, Wang, Ding, Yu, and
+  Igarashi]{Fang2026dropansh}
+Shuangkang Fang, I-Chao Shen, Xuanyang Zhang, Zesheng Wang, Yufeng Wang, Wenrui
+  Ding, Gang Yu, and Takeo Igarashi.
+\newblock Dropping anchor and spherical harmonics for sparse-view {Gaussian}
+  splatting.
+\newblock In \emph{{IEEE/CVF} Conference on Computer Vision and Pattern
+  Recognition ({CVPR})}, pages 33312--33322, 2026.
+
+\bibitem[Frikel and Quinto(2013)]{Frikel2013}
+J{\"u}rgen Frikel and Eric~Todd Quinto.
+\newblock Characterization and reduction of artifacts in limited angle
+  tomography.
+\newblock \emph{Inverse Problems}, 29\penalty0 (12):\penalty0 125007, 2013.
+\newblock \doi{10.1088/0266-5611/29/12/125007}.
+
+\bibitem[Georgiadis et~al.(2015)Georgiadis, Guizar-Sicairos, Zwahlen,
+  Tr{\"u}ssel, Bunk, M{\"u}ller, and Schneider]{Georgiadis2015}
+Marios Georgiadis, Manuel Guizar-Sicairos, Alexander Zwahlen, Andreas~J.
+  Tr{\"u}ssel, Oliver Bunk, Ralph M{\"u}ller, and Philipp Schneider.
+\newblock {3D} scanning {SAXS}: A novel method for the assessment of bone
+  ultrastructure orientation.
+\newblock \emph{Bone}, 71:\penalty0 42--52, 2015.
+\newblock \doi{10.1016/j.bone.2014.10.002}.
+
+\bibitem[Kingma and Ba(2015)]{Kingma2015}
+Diederik~P. Kingma and Jimmy Ba.
+\newblock {Adam}: A method for stochastic optimization.
+\newblock In \emph{International Conference on Learning Representations
+  ({ICLR})}, 2015.
+
+\bibitem[Li et~al.(2023)Li, M{\"u}ller, Evans, Taylor, Unberath, Liu, and
+  Lin]{Li2023neuralangelo}
+Zhaoshuo Li, Thomas M{\"u}ller, Alex Evans, Russell~H. Taylor, Mathias
+  Unberath, Ming-Yu Liu, and Chen-Hsuan Lin.
+\newblock {Neuralangelo}: High-fidelity neural surface reconstruction.
+\newblock In \emph{{IEEE/CVF} Conference on Computer Vision and Pattern
+  Recognition ({CVPR})}, pages 8456--8465, 2023.
+
+\bibitem[Liebi et~al.(2015)Liebi, Georgiadis, Menzel, Schneider, Kohlbrecher,
+  Bunk, and Guizar-Sicairos]{Liebi2015}
+Marianne Liebi, Marios Georgiadis, Andreas Menzel, Philipp Schneider, Joachim
+  Kohlbrecher, Oliver Bunk, and Manuel Guizar-Sicairos.
+\newblock Nanostructure surveys of macroscopic specimens by small-angle
+  scattering tensor tomography.
+\newblock \emph{Nature}, 527\penalty0 (7578):\penalty0 349--352, 2015.
+\newblock \doi{10.1038/nature16056}.
+
+\bibitem[Liebi et~al.(2018)Liebi, Georgiadis, Kohlbrecher, Holler, Raabe, Usov,
+  Menzel, Schneider, Bunk, and Guizar-Sicairos]{Liebi2018}
+Marianne Liebi, Marios Georgiadis, Joachim Kohlbrecher, Mirko Holler, J{\"o}rg
+  Raabe, Ivan Usov, Andreas Menzel, Philipp Schneider, Oliver Bunk, and Manuel
+  Guizar-Sicairos.
+\newblock Small-angle {X}-ray scattering tensor tomography: model of the
+  three-dimensional reciprocal-space map, reconstruction algorithm and angular
+  sampling requirements.
+\newblock \emph{Acta Crystallographica Section A: Foundations and Advances},
+  74\penalty0 (1):\penalty0 12--24, 2018.
+\newblock \doi{10.1107/S205327331701614X}.
+
+\bibitem[Lin et~al.(2021)Lin, Ma, Torralba, and Lucey]{Lin2021barf}
+Chen-Hsuan Lin, Wei-Chiu Ma, Antonio Torralba, and Simon Lucey.
+\newblock {BARF}: Bundle-adjusting neural radiance fields.
+\newblock In \emph{{IEEE/CVF} International Conference on Computer Vision
+  ({ICCV})}, pages 5741--5751, 2021.
+
+\bibitem[Mildenhall et~al.(2020)Mildenhall, Srinivasan, Tancik, Barron,
+  Ramamoorthi, and Ng]{Mildenhall2020}
+Ben Mildenhall, Pratul~P. Srinivasan, Matthew Tancik, Jonathan~T. Barron, Ravi
+  Ramamoorthi, and Ren Ng.
+\newblock {NeRF}: Representing scenes as neural radiance fields for view
+  synthesis.
+\newblock In \emph{Computer Vision -- {ECCV} 2020}, volume 12346 of
+  \emph{Lecture Notes in Computer Science}, pages 405--421. Springer, 2020.
+\newblock \doi{10.1007/978-3-030-58452-8_24}.
+
+\bibitem[M{\"u}ller et~al.(2022)M{\"u}ller, Evans, Schied, and
+  Keller]{Mueller2022}
+Thomas M{\"u}ller, Alex Evans, Christoph Schied, and Alexander Keller.
+\newblock Instant neural graphics primitives with a multiresolution hash
+  encoding.
+\newblock \emph{ACM Transactions on Graphics}, 41\penalty0 (4):\penalty0 1--15,
+  2022.
+\newblock \doi{10.1145/3528223.3530127}.
+
+\bibitem[Nielsen et~al.(2023)Nielsen, Erhart, Guizar-Sicairos, and
+  Liebi]{Nielsen2023}
+Leonard~C. Nielsen, Paul Erhart, Manuel Guizar-Sicairos, and Marianne Liebi.
+\newblock Small-angle scattering tensor tomography algorithm for robust
+  reconstruction of complex textures.
+\newblock \emph{Acta Crystallographica Section A: Foundations and Advances},
+  79\penalty0 (6):\penalty0 515--526, 2023.
+\newblock \doi{10.1107/S205327332300863X}.
+
+\bibitem[Nielsen et~al.(2024)Nielsen, T{\"a}nzer, Rodriguez-Fernandez, Erhart,
+  and Liebi]{Nielsen2024}
+Leonard~C. Nielsen, Torne T{\"a}nzer, Irene Rodriguez-Fernandez, Paul Erhart,
+  and Marianne Liebi.
+\newblock Investigating the missing-wedge problem in small-angle {X}-ray
+  scattering tensor tomography across real and reciprocal space.
+\newblock \emph{Journal of Synchrotron Radiation}, 31\penalty0 (5):\penalty0
+  1327--1339, 2024.
+\newblock \doi{10.1107/S1600577524006702}.
+
+\bibitem[Nielsen et~al.(2025)Nielsen, Carlsen, Wang, Baroni, T{\"a}nzer, Liebi,
+  and Erhart]{mumott}
+Leonard~C. Nielsen, Mads Carlsen, Sici Wang, Arthur Baroni, Torne T{\"a}nzer,
+  Marianne Liebi, and Paul Erhart.
+\newblock {MUMOTT}: a {Python} package for the analysis of multi-modal tensor
+  tomography data.
+\newblock \emph{Journal of Applied Crystallography}, 58\penalty0 (5):\penalty0
+  1834--1845, 2025.
+\newblock \doi{10.1107/S1600576725007289}.
+
+\bibitem[Paszke et~al.(2019)Paszke, Gross, Massa, Lerer, Bradbury, Chanan,
+  Killeen, Lin, Gimelshein, Antiga, Desmaison, K{\"o}pf, Yang, DeVito, Raison,
+  Tejani, Chilamkurthy, Steiner, Fang, Bai, and Chintala]{Paszke2019}
+Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory
+  Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, Alban
+  Desmaison, Andreas K{\"o}pf, Edward Yang, Zachary DeVito, Martin Raison,
+  Alykhan Tejani, Sasank Chilamkurthy, Benoit Steiner, Lu~Fang, Junjie Bai, and
+  Soumith Chintala.
+\newblock {PyTorch}: An imperative style, high-performance deep learning
+  library.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~32, 2019.
+
+\bibitem[R{\"u}ckert et~al.(2022)R{\"u}ckert, Wang, Li, Idoughi, and
+  Heidrich]{Ruckert2022}
+Darius R{\"u}ckert, Yuanhao Wang, Rui Li, Ramzi Idoughi, and Wolfgang Heidrich.
+\newblock {NeAT}: Neural adaptive tomography.
+\newblock \emph{ACM Transactions on Graphics}, 41\penalty0 (4):\penalty0 1--13,
+  2022.
+\newblock \doi{10.1145/3528223.3530121}.
+
+\bibitem[Schaff et~al.(2015)Schaff, Bech, Zaslansky, Jud, Liebi,
+  Guizar-Sicairos, and Pfeiffer]{Schaff2015}
+Florian Schaff, Martin Bech, Paul Zaslansky, Christoph Jud, Marianne Liebi,
+  Manuel Guizar-Sicairos, and Franz Pfeiffer.
+\newblock Six-dimensional real and reciprocal space small-angle {X}-ray
+  scattering tomography.
+\newblock \emph{Nature}, 527\penalty0 (7578):\penalty0 353--356, 2015.
+\newblock \doi{10.1038/nature16060}.
+
+\bibitem[Sitzmann et~al.(2020)Sitzmann, Martel, Bergman, Lindell, and
+  Wetzstein]{Sitzmann2020}
+Vincent Sitzmann, Julien N.~P. Martel, Alexander~W. Bergman, David~B. Lindell,
+  and Gordon Wetzstein.
+\newblock Implicit neural representations with periodic activation functions.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~33, pages 7462--7473, 2020.
+
+\bibitem[Tancik et~al.(2020)Tancik, Srinivasan, Mildenhall, Fridovich-Keil,
+  Raghavan, Singhal, Ramamoorthi, Barron, and Ng]{Tancik2020}
+Matthew Tancik, Pratul~P. Srinivasan, Ben Mildenhall, Sara Fridovich-Keil,
+  Nithin Raghavan, Utkarsh Singhal, Ravi Ramamoorthi, Jonathan~T. Barron, and
+  Ren Ng.
+\newblock {Fourier} features let networks learn high frequency functions in low
+  dimensional domains.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~33, pages 7537--7547, 2020.
+
+\bibitem[Wang et~al.(2004)Wang, Bovik, Sheikh, and Simoncelli]{Wang2004}
+Zhou Wang, Alan~C. Bovik, Hamid~R. Sheikh, and Eero~P. Simoncelli.
+\newblock Image quality assessment: from error visibility to structural
+  similarity.
+\newblock \emph{IEEE Transactions on Image Processing}, 13\penalty0
+  (4):\penalty0 600--612, 2004.
+\newblock \doi{10.1109/TIP.2003.819861}.
+
+\bibitem[Yang et~al.(2023)Yang, Pavone, and Wang]{Yang2023}
+Jiawei Yang, Marco Pavone, and Yue Wang.
+\newblock {FreeNeRF}: Improving few-shot neural rendering with free frequency
+  regularization.
+\newblock In \emph{{IEEE/CVF} Conference on Computer Vision and Pattern
+  Recognition ({CVPR})}, pages 8254--8263, 2023.
+\newblock \doi{10.1109/CVPR52729.2023.00798}.
+
+\bibitem[Zha et~al.(2022)Zha, Zhang, and Li]{Zha2022}
+Ruyi Zha, Yanhao Zhang, and Hongdong Li.
+\newblock {NAF}: Neural attenuation fields for sparse-view {CBCT}
+  reconstruction.
+\newblock In \emph{Medical Image Computing and Computer Assisted Intervention
+  -- {MICCAI} 2022}, volume 13436 of \emph{Lecture Notes in Computer Science},
+  pages 442--452. Springer, 2022.
+\newblock \doi{10.1007/978-3-031-16446-0_42}.
+
+\end{thebibliography}
